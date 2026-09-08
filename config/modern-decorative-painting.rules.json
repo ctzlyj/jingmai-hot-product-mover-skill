@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "category": {"id": 35381, "name": "现代装饰画"},
+  "productDefaults": {
+    "brandId": -1,
+    "brandName": "无品牌",
+    "sevenDayReturnCode": "1",
+    "sevenDayReturnLabel": "支持7天无理由退货",
+    "freightTemplateId": 0,
+    "freightTemplateLabel": "由 store.local.json 提供",
+    "mainImageMode": "multi_set",
+    "stock": 10000
+  },
+  "categoryAttributes": [
+    {"componentCode": "prop-product-243058", "attrName": "风格", "inputType": "singleSelect", "required": true, "valueIds": ["1403810"], "valueLabels": ["新中式"]},
+    {"componentCode": "prop-product-243094", "attrName": "工艺", "inputType": "singleSelect", "required": true, "valueIds": ["1404074"], "valueLabels": ["印刷"]}
+  ],
+  "skuAttributes": {
+    "mounting": {"default": {"valueId": "1404228", "label": "有框"}},
+    "subject": {
+      "rules": [
+        {"keywords": ["山水", "靠山", "瀑布", "江山"], "valueId": "1403931", "label": "山水"},
+        {"keywords": ["花鸟", "荷花", "牡丹", "九鱼"], "valueId": "1403941", "label": "花鸟"},
+        {"keywords": ["书法", "字画", "励志", "家训"], "valueId": "1403967", "label": "文字"}
+      ],
+      "default": {"valueId": "1404022", "label": "风景"}
+    }
+  },
+  "sceneRules": [
+    {"keyword": "茶室", "valueId": "1458930", "label": "茶室"},
+    {"keyword": "餐厅", "valueId": "1404186", "label": "餐厅"},
+    {"keyword": "办公室", "valueId": "1404203", "label": "职场"},
+    {"keyword": "客厅", "valueId": "1404212", "label": "客厅"},
+    {"keyword": "玄关", "valueId": "1404218", "label": "玄关"},
+    {"keyword": "儿童房", "valueId": "1404225", "label": "儿童房"},
+    {"keyword": "卧室", "valueId": "1404231", "label": "卧室"},
+    {"keyword": "书房", "valueId": "1404236", "label": "书房"},
+    {"keyword": "学校", "valueId": "2187046", "label": "教室"}
+  ],
+  "defaultScenes": [
+    {"valueId": "1404212", "label": "客厅"},
+    {"valueId": "1404218", "label": "玄关"},
+    {"valueId": "1404236", "label": "书房"}
+  ],
+  "vendorSku": {
+    "defaultStart": 10000,
+    "prefixRules": [
+      {"keywords": ["粘贴画", "自粘", "墙贴", "贴画", "贴纸"], "prefix": "ZTH"},
+      {"keywords": ["挂轴", "卷轴", "挂画"], "prefix": "GZH"}
+    ],
+    "defaultPrefix": "GZH"
+  },
+  "pricing": {
+    "strategy": "reverse_from_source_price",
+    "sourcePriceMeaning": "源商品当前逐SKU价格",
+    "targetArrivalPriceMeaning": "源商品当前逐SKU价格减去belowCompetitor",
+    "belowCompetitor": "0.10",
+    "nationalSubsidyRate": "0.15",
+    "activityDiscountRate": "0.15",
+    "coupon": "0",
+    "discountExecution": "merchant_batch_enrollment_after_publish",
+    "requiresPostPromotionVerification": false
+  }
+}

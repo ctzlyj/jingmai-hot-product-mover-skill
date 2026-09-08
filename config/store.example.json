@@ -1,0 +1,10 @@
+{
+  "store": {
+    "venderId": 0,
+    "shopName": "YOUR_SHOP_NAME"
+  },
+  "business": {
+    "freightTemplateId": 0,
+    "freightTemplateLabel": "YOUR_FREIGHT_TEMPLATE_NAME"
+  }
+}

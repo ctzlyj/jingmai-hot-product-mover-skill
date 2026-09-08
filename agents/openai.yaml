@@ -1,0 +1,4 @@
+interface:
+  display_name: "站内爆品自动搬运上架京麦"
+  short_description: "采集京东商品并通过京麦安全、可恢复地批量上架"
+  default_prompt: "使用 $jd-jingmai-hot-product-mover 搬运这个已获授权的京东商品链接。先核验店铺和类目配置，生成本地审核件；只有我明确确认后才正式发布，并完成图片、价格、库存和主图视频逐 SKU 关系审计。"
