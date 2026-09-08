@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +29,7 @@ from jdo_listing_mvp import (  # noqa: E402
 from jd_product_pipeline import (  # noqa: E402
     build_video_binding_body,
     effective_rules,
+    save_state,
     validate_store_config,
     video_is_ready,
     video_relation_audit,
@@ -233,6 +235,13 @@ class ProductMoverTests(unittest.TestCase):
                 "store": {"venderId": 0, "shopName": "YOUR_SHOP_NAME"},
                 "business": {"freightTemplateId": 0, "freightTemplateLabel": ""},
             })
+
+    def test_successful_state_clears_stale_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text('{"stage":"FAILED","error":"old failure"}', encoding="utf-8")
+            state = save_state(path, "VERIFIED")
+            self.assertNotIn("error", state)
 
 
 if __name__ == "__main__":

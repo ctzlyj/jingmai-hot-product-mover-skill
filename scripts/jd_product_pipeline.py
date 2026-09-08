@@ -130,6 +130,8 @@ def video_relation_audit(
 def save_state(path: Path, stage: str, **values: Any) -> dict[str, Any]:
     state = mover.read_json(path) if path.exists() else {}
     state.update(values)
+    if not stage.startswith("FAILED"):
+        state.pop("error", None)
     state["stage"] = stage
     state["updatedAt"] = mover.now_iso()
     state.setdefault("history", []).append({"stage": stage, "at": state["updatedAt"]})
