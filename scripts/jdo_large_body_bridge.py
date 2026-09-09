@@ -27,6 +27,9 @@ def main() -> int:
     exec(code, namespace)
 
     request = json.loads(args.request.read_text(encoding="utf-8"))
+    profile = str(request.get("profile") or "").strip().lower()
+    if not profile or profile == "default":
+        raise RuntimeError("request must include an explicit non-default jdo-cli profile")
     body_path = request.pop("bodyFile", None)
     body = Path(body_path).read_text(encoding="utf-8") if body_path else request.pop("body", None)
     invoke_args = argparse.Namespace(
@@ -36,7 +39,7 @@ def main() -> int:
         if request.get("params") is not None else None,
         body=body,
         path_params=request.get("pathParams"),
-        profile=request.get("profile"),
+        profile=profile,
         app_key=None,
         app_secret=None,
         access_token=None,

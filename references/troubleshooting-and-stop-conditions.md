@@ -4,7 +4,7 @@
 
 遇到以下任一情况，不得继续正式发布：
 
-- 当前 `venderId` 或 `shopName` 与 `store.local.json` 不一致。
+- 命令未显式指定 Profile、使用 `default`，或当前 `profile`、`venderId`、`shopName` 与 `store.local.json` 不一致。
 - 店铺已有商品未完整读取、AI 语义判重不可用或判重证据记录无效。
 - 源商品或素材无合法使用授权。
 - 源 SKU 列表不完整，或任一 SKU 的 `priceFloor.ext.jdPrice` 缺失。
@@ -17,6 +17,14 @@
 - 商品详情、库存、主图或视频关系审计失败。
 
 ## 常见问题
+
+### 未确认发布却产生锁文件或上传素材
+
+`publish_local_draft.py` 必须在创建 `.publish.lock`、上传图片或写状态前校验 `--confirm PUBLISH_TO_JD`。缺少或写错确认字符串时应立即退出，且草稿目录不得出现锁文件、运行目录或上传记录。回归测试需覆盖这一零副作用门槛。
+
+### 多店铺登录态串店
+
+每个店铺必须使用独立的非 `default` jdo-cli Profile。命令 Profile 与 `store.local.json` 的 `store.profile` 不一致时停止；写操作前再次调用店铺信息接口，核验 `venderId` 与 `shopName`。不得仅凭 Chrome 配置隔离推断 jdo-cli OAuth 已隔离。
 
 ### Python 捕获 jdo-cli 后中文变成替换字符
 

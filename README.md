@@ -1,6 +1,6 @@
 # 爆品自动搬运上架京麦
 
-一个面向京东 POP 商家的 Codex Skill：输入已获授权的京东商品链接，生成可审核的标准 JSON/Excel 与本地素材，并通过 `jdo-cli` 完成图片上传、合规校验、商品发布、主图视频上传、逐 SKU 绑定和发布后审计。
+一个面向京东 POP 商家的 Codex Skill：输入已获授权的京东、淘宝或天猫商品链接，生成可审核的标准 JSON/Excel 与本地素材，并通过 `jdo-cli` 完成图片上传、合规校验、商品发布、主图视频上传、逐 SKU 绑定和发布后审计。
 
 > 当前生产验证范围：末级类目 **现代装饰画（35381）**。其他类目需要先刷新实时 Schema，再建立并验证类目适配规则，不能直接复用装饰画字段。
 
@@ -39,22 +39,27 @@ Copy-Item config\store.example.json config\store.local.json
 ```powershell
 # 1. 当前登录店铺下刷新实时发品 Schema 与图片空间信息
 .\.venv\Scripts\python.exe scripts\jdo_listing_mvp.py refresh-reference `
+  --profile your-store-profile `
   --category-id 35381 `
   --category-name "现代装饰画" `
   --output config\modern-decorative-painting.reference.json
 
 # 2. 只生成本地审核件并通过京东合规校验，不发布
 .\.venv\Scripts\python.exe scripts\jd_product_pipeline.py run `
+  --profile your-store-profile `
   --url "https://item.jd.com/源SKU.html"
 
 # 3. 用户确认后正式发布
 .\.venv\Scripts\python.exe scripts\jd_product_pipeline.py run `
+  --profile your-store-profile `
   --url "https://item.jd.com/源SKU.html" `
   --publish --confirm PUBLISH_TO_JD
 
 # 4. 批量发布；links.txt 每行一个链接，遇到失败立即停止
 .\.venv\Scripts\python.exe scripts\jd_product_pipeline.py batch `
+  --profile your-store-profile `
   --input links.txt `
+  --preflight-decisions preflight-decisions.json `
   --publish --confirm PUBLISH_TO_JD
 ```
 
@@ -105,8 +110,10 @@ L = 预计到手价
 
 ## 安全边界
 
-- 发布前必须核对当前登录店铺与本地白名单配置。
+- 每个店铺使用独立的非 `default` jdo-cli Profile；所有命令显式传 `--profile`。
+- 每次写操作前必须回查店铺信息，并与配置中的 `profile`、`venderId`、`shopName` 完全一致。
 - 正式发布必须显式传入 `--publish --confirm PUBLISH_TO_JD`。
+- 发布本地草稿时先校验确认字符串，再创建锁、上传素材或写状态。
 - 任一 SKU 缺价、价格复算失败、销售属性维度不明或类目字段无有效映射时停止。
 - 已绑定其他主图视频时停止，禁止自动覆盖。
 - 新品接口返回 `productId` 后立即落盘；详情暂时查不到时只轮询，绝不重新发品。

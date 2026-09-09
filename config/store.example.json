@@ -1,5 +1,6 @@
 {
   "store": {
+    "profile": "your-store-profile",
     "venderId": 0,
     "shopName": "YOUR_SHOP_NAME"
   },

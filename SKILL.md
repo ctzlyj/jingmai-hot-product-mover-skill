@@ -11,8 +11,8 @@ description: 将京东、淘宝或天猫商品链接采集为可审核素材和�
 
 1. 仅处理用户明确授权使用的商品、图片、详情和视频。
 2. 若环境提供 O2，先运行 `o2 search "京麦 商品发布 素材 视频" --json`，阅读命中的 jdo 能力说明；没有完整搬运能力时使用本 Skill 脚本。
-3. 阅读 `references/installation-and-configuration.md`，准备 `config/store.local.json` 并刷新当前店铺、当前类目的实时参考文件。
-4. 发布前调用店铺信息接口，必须与本地白名单配置同时匹配 `venderId` 和 `shopName`；不匹配立即停止。
+3. 阅读 `references/installation-and-configuration.md`，为每个店铺准备独立的非 `default` jdo-cli Profile 和 `config/store.local.json`，再刷新当前店铺、当前类目的实时参考文件。
+4. 每次京麦写操作前调用店铺信息接口，命令 `--profile`、配置中的 `profile`、`venderId` 和 `shopName` 必须全部匹配；不匹配立即停止。
 5. 新类目不得直接套用现代装饰画 Schema。先按 `references/adapting-new-category.md` 做小规模 MVP。
 6. 淘宝来源先按 `references/taobao-source-adapter.md` 做只读采集和单商品 MVP；Browser Bridge 必须使用独立新标签，禁止导航用户当前活动标签。
 
@@ -41,18 +41,22 @@ description: 将京东、淘宝或天猫商品链接采集为可审核素材和�
 
 ```powershell
 python scripts/jdo_listing_mvp.py refresh-reference `
+  --profile your-store-profile `
   --category-id 35381 `
   --category-name "现代装饰画" `
   --output config/modern-decorative-painting.reference.json
 
 python scripts/jd_product_pipeline.py run `
+  --profile your-store-profile `
   --url "https://item.jd.com/源SKU.html"
 
 python scripts/jd_product_pipeline.py run `
+  --profile your-store-profile `
   --url "https://item.jd.com/源SKU.html" `
   --publish --confirm PUBLISH_TO_JD
 
 python scripts/jd_product_pipeline.py batch `
+  --profile your-store-profile `
   --input links.txt `
   --preflight-decisions preflight-decisions.json `
   --publish --confirm PUBLISH_TO_JD
@@ -71,6 +75,8 @@ python scripts/jd_product_pipeline.py batch `
 - 视频上传地址首次请求不得发送 `breakPointFlag=false`；绑定体根节点必须是对象，每次只提交一个 SKU。
 - 已有 SKU 绑定其他视频时停止，绝不自动覆盖。
 - 已有商品整版编辑不得携带库存；库存修改只能走库存专用接口。
+- 禁止使用 `default` Profile；所有 jdo-cli 调用必须绑定店铺专属 Profile，写操作前重新回查店铺身份。
+- `publish_local_draft.py` 必须先校验 `PUBLISH_TO_JD`，再创建锁、上传素材或写状态；缺少确认时不得产生任何发布副作用。
 - 商品详情返回“未查询到商品信息”时必须查询申请单详情；`draftComputeStatus=3` 立即写入 `PRODUCT_APPLY_REJECTED` 并停止，不能继续轮询或重新创建。
 - 未完成目标类目过滤、店铺全量候选读取或 AI 语义判重时，不得创建商品。
 - 淘宝 SKU 只采用页面真实 `skuBase.skus`；逐项关联 `skuCore.sku2info` 当前有效价，禁止按属性笛卡尔积推测。单值 SKU 属性保留为固定属性，不额外扩成销售维度。

@@ -697,7 +697,7 @@ def build_listing(
     expected_category = expected_source_category_id(rules)
     if not source.get("categoryIds") or int(source["categoryIds"][-1]) != expected_category:
         raise MoverError(f"源商品类目与规则不一致，预期来源类目{expected_category}：{source.get('categoryIds')}")
-    product_key = f"JD-{source['sourceSpu']}"
+    product_key = f"{str(source.get('productKeyPrefix') or 'JD').upper()}-{source['sourceSpu']}"
     source_title = source["title"]
     title = listing_title(source_title, str(source.get("sourceBrandName") or ""))
     prefix = infer_prefix(source_title, rules)

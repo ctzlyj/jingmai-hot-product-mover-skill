@@ -24,6 +24,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / "config" / "modern-decorative-painting.reference.json"
+STORE_CONFIG = ROOT / "config" / "store.local.json"
 CATEGORY_ID = 35381
 CATEGORY_NAME = "现代装饰画"
 JDO_CLI = Path.home() / ".jdo-cli" / "bin" / "jdo-cli.exe"
@@ -40,10 +41,108 @@ PYTHON312_CANDIDATES = tuple(
 )
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 IMAGE_FORMATS = {"JPEG", "PNG", "GIF", "WEBP"}
+PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
+_ACTIVE_JDO_PROFILE: str | None = None
+_VERIFIED_JDO_STORE: dict[str, Any] | None = None
 
 
 class JdoError(RuntimeError):
     pass
+
+
+def configure_jdo_profile(profile: str) -> str:
+    global _ACTIVE_JDO_PROFILE, _VERIFIED_JDO_STORE
+    normalized = str(profile or "").strip().lower()
+    if not normalized:
+        raise JdoError("必须明确指定 jdo-cli Profile")
+    if normalized == "default":
+        raise JdoError("禁止使用含糊的 default Profile，请使用店铺专属名称")
+    if not PROFILE_PATTERN.fullmatch(normalized):
+        raise JdoError(f"jdo-cli Profile 名称不合法：{profile}")
+    _ACTIVE_JDO_PROFILE = normalized
+    _VERIFIED_JDO_STORE = None
+    return normalized
+
+
+def active_jdo_profile() -> str:
+    if not _ACTIVE_JDO_PROFILE:
+        raise JdoError("必须先明确指定 jdo-cli Profile")
+    return _ACTIVE_JDO_PROFILE
+
+
+def mark_jdo_store_verified(profile: str, vender_id: int, shop_name: str) -> None:
+    global _VERIFIED_JDO_STORE
+    active_profile = active_jdo_profile()
+    if str(profile).strip().lower() != active_profile:
+        raise JdoError(f"店铺核验 Profile 与当前 Profile 不一致：{profile} != {active_profile}")
+    if int(vender_id or 0) <= 0 or not str(shop_name or "").strip():
+        raise JdoError("店铺身份核验结果不完整")
+    _VERIFIED_JDO_STORE = {
+        "profile": active_profile,
+        "venderId": int(vender_id),
+        "shopName": str(shop_name).strip(),
+    }
+
+
+def require_verified_jdo_store() -> dict[str, Any]:
+    profile = active_jdo_profile()
+    if not _VERIFIED_JDO_STORE or _VERIFIED_JDO_STORE.get("profile") != profile:
+        raise JdoError(f"Profile {profile} 尚未完成店铺身份回查，禁止写操作")
+    return dict(_VERIFIED_JDO_STORE)
+
+
+def recheck_verified_jdo_store() -> dict[str, Any]:
+    expected = require_verified_jdo_store()
+    data = get(
+        "jdo-seller-info",
+        "/rest/sp-seller/v0/venderinfo",
+        {"scopeSet": "baseInfo"},
+    ).get("data") or {}
+    shop = data.get("shopBaseInfo") or {}
+    actual_vender_id = int(data.get("venderId") or 0)
+    actual_shop_name = str(shop.get("shopName") or "").strip()
+    if (
+        actual_vender_id != int(expected["venderId"])
+        or actual_shop_name != str(expected["shopName"])
+    ):
+        raise JdoError(
+            f"写操作前店铺身份已变化：Profile={expected['profile']}, "
+            f"venderId={actual_vender_id}, shopName={actual_shop_name}"
+        )
+    return expected
+
+
+def profile_bound_arguments(arguments: list[str]) -> list[str]:
+    profile = active_jdo_profile()
+    bound = list(arguments)
+    if "--profile" in bound:
+        index = bound.index("--profile")
+        supplied = bound[index + 1] if index + 1 < len(bound) else ""
+        if supplied != profile:
+            raise JdoError(f"命令 Profile 与当前 Profile 不一致：{supplied} != {profile}")
+        return bound
+    return [*bound, "--profile", profile]
+
+
+def jdo_arguments_are_write(arguments: list[str]) -> bool:
+    if not arguments or arguments[0] != "invoke":
+        return False
+    if "--method" not in arguments:
+        return False
+    index = arguments.index("--method")
+    method = arguments[index + 1].upper() if index + 1 < len(arguments) else ""
+    return method not in {"", "GET", "HEAD", "OPTIONS"}
+
+
+def decode_process_output(value: bytes) -> str:
+    if not value:
+        return ""
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return value.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return value.decode("utf-8", errors="replace")
 
 
 def parse_response(text: str) -> dict[str, Any]:
@@ -64,23 +163,29 @@ def parse_response(text: str) -> dict[str, Any]:
 
 
 def run_jdo(arguments: list[str]) -> dict[str, Any]:
+    bound_arguments = profile_bound_arguments(arguments)
+    if jdo_arguments_are_write(bound_arguments):
+        recheck_verified_jdo_store()
     executable = Path(os.environ.get("JDO_CLI_PATH", str(JDO_CLI)))
     if not executable.exists():
         raise JdoError(f"找不到 jdo-cli：{executable}")
     environment = os.environ.copy()
     environment["JDO_ENV"] = "prod"
+    environment["PYTHONUTF8"] = "1"
     environment["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(
-        [str(executable), *arguments],
+        [str(executable), *bound_arguments],
         cwd=ROOT,
         env=environment,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         check=False,
     )
-    output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+    output = "\n".join(
+        part for part in (
+            decode_process_output(completed.stdout),
+            decode_process_output(completed.stderr),
+        ) if part
+    )
     return parse_response(output)
 
 
@@ -103,6 +208,9 @@ def run_jdo_large(
     *, url: str, method: str, body_path: Path, skill_id: str,
     params: dict[str, Any] | None = None, yes: bool = False,
 ) -> dict[str, Any]:
+    profile = active_jdo_profile()
+    if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+        recheck_verified_jdo_store()
     python312 = next((path for path in PYTHON312_CANDIDATES if path.is_file()), None)
     if not python312:
         raise JdoError("找不到兼容 jdo-cli 的 Python 3.12；请设置 JDO_PYTHON312")
@@ -115,6 +223,7 @@ def run_jdo_large(
         "params": params,
         "skillId": skill_id,
         "requestIdentity": "vender",
+        "profile": profile,
         "timeout": 180,
         "yes": yes,
     }, ensure_ascii=False), encoding="utf-8")
@@ -143,6 +252,43 @@ def get(skill: str, url: str, params: dict[str, Any] | None = None) -> dict[str,
         arguments += ["--params", json.dumps(params, ensure_ascii=False, separators=(",", ":"))]
     arguments += ["--request-identity", "vender"]
     return run_jdo(arguments)
+
+
+def verify_configured_store_identity(store_config_path: Path, profile: str) -> dict[str, Any]:
+    config = load_json(store_config_path)
+    expected = config.get("store") or {}
+    expected_profile = str(expected.get("profile") or "").strip().lower()
+    active_profile = configure_jdo_profile(profile)
+    if expected_profile != active_profile:
+        raise JdoError(
+            f"命令 Profile 与店铺配置不一致：{active_profile} != {expected_profile or '未配置'}"
+        )
+    expected_vender_id = int(expected.get("venderId") or 0)
+    expected_shop_name = str(expected.get("shopName") or "").strip()
+    if expected_vender_id <= 0 or not expected_shop_name:
+        raise JdoError("店铺配置缺少有效的 venderId 或 shopName")
+    data = get(
+        "jdo-seller-info",
+        "/rest/sp-seller/v0/venderinfo",
+        {"scopeSet": "baseInfo"},
+    ).get("data") or {}
+    shop = data.get("shopBaseInfo") or {}
+    vender_id = int(data.get("venderId") or 0)
+    shop_name = str(shop.get("shopName") or "").strip()
+    if vender_id != expected_vender_id or shop_name != expected_shop_name:
+        raise JdoError(
+            f"Profile {active_profile} 对应店铺与配置不一致："
+            f"venderId={vender_id}, shopName={shop_name}"
+        )
+    if int(shop.get("type", -1)) != 0 or int(shop.get("status") or 0) != 1:
+        raise JdoError(f"Profile {active_profile} 对应店铺不是正常 POP 状态")
+    mark_jdo_store_verified(active_profile, vender_id, shop_name)
+    return {
+        "profile": active_profile,
+        "venderId": vender_id,
+        "shopName": shop_name,
+        "shopId": int(shop.get("shopId") or 0),
+    }
 
 
 def required(component: dict[str, Any]) -> bool:
@@ -1501,63 +1647,83 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     refresh = commands.add_parser("refresh-reference")
+    refresh.add_argument("--profile", required=True)
+    refresh.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     refresh.add_argument("--output", type=Path, default=REFERENCE)
     refresh.add_argument("--category-id", type=int, default=CATEGORY_ID)
     refresh.add_argument("--category-name", default=CATEGORY_NAME)
     refresh.add_argument("--brand-category-id", type=int)
-    refresh.set_defaults(handler=command_refresh)
+    refresh.set_defaults(handler=command_refresh, requires_jdo=True)
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--input", type=Path, required=True)
     preflight.add_argument("--reference", type=Path, default=REFERENCE)
     preflight.set_defaults(handler=command_preflight)
     upload_images = commands.add_parser("upload-images")
+    upload_images.add_argument("--profile", required=True)
+    upload_images.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     upload_images.add_argument("--input", type=Path, required=True)
     upload_images.add_argument("--reference", type=Path, default=REFERENCE)
     upload_images.add_argument("--output", type=Path)
     upload_images.add_argument("--confirm", default="")
-    upload_images.set_defaults(handler=command_upload)
+    upload_images.set_defaults(handler=command_upload, requires_jdo=True)
     build_payload = commands.add_parser("build-payload")
     build_payload.add_argument("--input", type=Path, required=True)
     build_payload.add_argument("--output-dir", type=Path, required=True)
     build_payload.set_defaults(handler=command_build_payload)
     validate_jd = commands.add_parser("validate-jd")
+    validate_jd.add_argument("--profile", required=True)
+    validate_jd.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     validate_jd.add_argument("--body", type=Path, required=True)
     validate_jd.add_argument("--output", type=Path, required=True)
-    validate_jd.set_defaults(handler=command_validate_jd)
+    validate_jd.set_defaults(handler=command_validate_jd, requires_jdo=True)
     publish = commands.add_parser("publish")
+    publish.add_argument("--profile", required=True)
+    publish.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     publish.add_argument("--body", type=Path, required=True)
     publish.add_argument("--output", type=Path, required=True)
     publish.add_argument("--confirm", default="")
-    publish.set_defaults(handler=command_publish)
+    publish.set_defaults(handler=command_publish, requires_jdo=True)
     edit_product = commands.add_parser("edit-product")
+    edit_product.add_argument("--profile", required=True)
+    edit_product.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     edit_product.add_argument("--body", type=Path, required=True)
     edit_product.add_argument("--product-id", type=int, required=True)
     edit_product.add_argument("--output", type=Path, required=True)
     edit_product.add_argument("--confirm", default="")
-    edit_product.set_defaults(handler=command_edit_product)
+    edit_product.set_defaults(handler=command_edit_product, requires_jdo=True)
     build_shared_image_update = commands.add_parser("build-shared-image-update")
+    build_shared_image_update.add_argument("--profile", required=True)
+    build_shared_image_update.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     build_shared_image_update.add_argument("--input", type=Path, required=True)
     build_shared_image_update.add_argument("--product-id", type=int, required=True)
     build_shared_image_update.add_argument("--output", type=Path, required=True)
-    build_shared_image_update.set_defaults(handler=command_build_shared_image_update)
+    build_shared_image_update.set_defaults(handler=command_build_shared_image_update, requires_jdo=True)
     apply_product_update = commands.add_parser("apply-product-update")
+    apply_product_update.add_argument("--profile", required=True)
+    apply_product_update.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     apply_product_update.add_argument("--body", type=Path, required=True)
     apply_product_update.add_argument("--product-id", type=int, required=True)
     apply_product_update.add_argument("--output", type=Path, required=True)
     apply_product_update.add_argument("--confirm", default="")
-    apply_product_update.set_defaults(handler=command_apply_product_update)
+    apply_product_update.set_defaults(handler=command_apply_product_update, requires_jdo=True)
     verify_shared_images = commands.add_parser("verify-shared-images")
+    verify_shared_images.add_argument("--profile", required=True)
+    verify_shared_images.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     verify_shared_images.add_argument("--input", type=Path, required=True)
     verify_shared_images.add_argument("--product-id", type=int, required=True)
     verify_shared_images.add_argument("--output", type=Path, required=True)
-    verify_shared_images.set_defaults(handler=command_verify_shared_images)
+    verify_shared_images.set_defaults(handler=command_verify_shared_images, requires_jdo=True)
     verify_product = commands.add_parser("verify-product")
+    verify_product.add_argument("--profile", required=True)
+    verify_product.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     verify_product.add_argument("--input", type=Path, required=True)
     verify_product.add_argument("--product-id", type=int, required=True)
     verify_product.add_argument("--output", type=Path, required=True)
-    verify_product.set_defaults(handler=command_verify_product)
+    verify_product.set_defaults(handler=command_verify_product, requires_jdo=True)
     args = parser.parse_args()
     try:
+        if getattr(args, "requires_jdo", False):
+            verify_configured_store_identity(args.store_config, args.profile)
         return args.handler(args)
     except (JdoError, OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2), file=sys.stderr)

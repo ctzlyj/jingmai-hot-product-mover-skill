@@ -21,6 +21,11 @@ import jdo_listing_mvp as jingmai
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def require_publish_confirmation(value: str) -> None:
+    if value != "PUBLISH_TO_JD":
+        raise pipeline.PipelineError("正式上架必须传 --confirm PUBLISH_TO_JD")
+
+
 def existing_product_id(state: dict[str, Any], item_number: str) -> tuple[int, dict[str, Any] | None]:
     product_id = int(state.get("productId") or 0)
     if product_id:
@@ -73,6 +78,7 @@ def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
     lock_path = folder / ".publish.lock"
     if not listing_path.is_file() or not source_path.is_file() or not state_path.is_file():
         raise pipeline.PipelineError(f"本地草稿不完整：{folder}")
+    require_publish_confirmation(args.confirm)
     try:
         lock_handle = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(lock_handle)
@@ -85,7 +91,7 @@ def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
         listing = mover.read_json(listing_path)
         store_config = mover.read_json(args.store_config)
         rules = pipeline.effective_rules(mover.read_json(args.rules), store_config)
-        store = pipeline.verify_store_identity(store_config)
+        store = pipeline.verify_store_identity(store_config, args.profile)
         state = pipeline.save_state(state_path, "STORE_VERIFIED", store=store)
 
         errors, warnings = jingmai.validate_manifest(
@@ -159,8 +165,6 @@ def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
                 state_path, "JD_VALIDATED", validationResponse=str(validation_path),
                 violationCount=len(violations),
             )
-            if args.confirm != "PUBLISH_TO_JD":
-                raise pipeline.PipelineError("正式上架必须传 --confirm PUBLISH_TO_JD")
             publish_response = jingmai.run_jdo_large(
                 url="/rest/sp-product/v0/product-applies", method="POST",
                 body_path=publish_dir / "publish-body.json",
@@ -252,6 +256,7 @@ def main() -> int:
         sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--folder", type=Path, required=True)
+    parser.add_argument("--profile", required=True)
     parser.add_argument("--store-config", type=Path, default=ROOT / "config" / "store.local.json")
     parser.add_argument("--rules", type=Path, default=ROOT / "config" / "modern-decorative-painting.rules.json")
     parser.add_argument("--reference", type=Path, default=ROOT / "config" / "modern-decorative-painting.reference.json")

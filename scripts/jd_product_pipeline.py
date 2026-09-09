@@ -42,13 +42,20 @@ def video_is_ready(status: int) -> bool:
     return status in {2, 4}
 
 
-def validate_store_config(config: dict[str, Any]) -> None:
+def validate_store_config(config: dict[str, Any], profile: str | None = None) -> None:
     store = config.get("store") or {}
     business = config.get("business") or {}
     if int(store.get("venderId") or 0) <= 0:
         raise ValueError("店铺配置缺少有效的 store.venderId")
     if not str(store.get("shopName") or "").strip() or str(store.get("shopName")) == "YOUR_SHOP_NAME":
         raise ValueError("店铺配置缺少有效的 store.shopName")
+    configured_profile = str(store.get("profile") or "").strip().lower()
+    if not configured_profile or configured_profile == "default":
+        raise ValueError("店铺配置缺少明确的 store.profile，且不得使用 default")
+    if profile and configured_profile != str(profile).strip().lower():
+        raise ValueError(
+            f"命令 Profile 与店铺配置不一致：{profile} != {configured_profile}"
+        )
     if int(business.get("freightTemplateId") or 0) <= 0:
         raise ValueError("店铺配置缺少有效的 business.freightTemplateId")
     if not str(business.get("freightTemplateLabel") or "").strip():
@@ -163,9 +170,10 @@ def existing_folder(source_sku: str, output_root: Path) -> Path | None:
     return matches[0] if matches else None
 
 
-def verify_store_identity(store_config: dict[str, Any]) -> dict[str, Any]:
-    validate_store_config(store_config)
+def verify_store_identity(store_config: dict[str, Any], profile: str) -> dict[str, Any]:
+    validate_store_config(store_config, profile)
     expected = store_config["store"]
+    active_profile = jingmai.configure_jdo_profile(profile)
     data = jingmai.get(
         "jdo-seller-info",
         "/rest/sp-seller/v0/venderinfo",
@@ -180,7 +188,13 @@ def verify_store_identity(store_config: dict[str, Any]) -> dict[str, Any]:
         )
     if int(shop.get("type", -1)) != 0 or int(shop.get("status") or 0) != 1:
         raise PipelineError(f"店铺不是正常POP状态：{shop}")
-    return {"venderId": vender_id, "shopName": shop_name, "shopId": int(shop.get("shopId") or 0)}
+    jingmai.mark_jdo_store_verified(active_profile, vender_id, shop_name)
+    return {
+        "profile": active_profile,
+        "venderId": vender_id,
+        "shopName": shop_name,
+        "shopId": int(shop.get("shopId") or 0),
+    }
 
 
 def product_apply_rejection(product_id: int) -> dict[str, Any] | None:
@@ -666,7 +680,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             raise PipelineError(
                 f"缺少店铺类目参考文件：{args.reference}；请先运行 jdo_listing_mvp.py refresh-reference"
             )
-        store = verify_store_identity(store_config)
+        store = verify_store_identity(store_config, args.profile)
         state = save_state(state_path, "STORE_VERIFIED", store=store)
 
         folder, listing = local_draft(args.url, args.output, rules, args.reference)
@@ -900,6 +914,7 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run")
     run.add_argument("--url", required=True)
+    run.add_argument("--profile", required=True)
     run.add_argument("--output", type=Path, default=OUTPUT_ROOT)
     run.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     run.add_argument("--rules", type=Path, default=RULES)
@@ -913,6 +928,7 @@ def main() -> int:
     run.add_argument("--video-interval", type=int, default=10)
     batch = commands.add_parser("batch")
     batch.add_argument("--input", type=Path, required=True)
+    batch.add_argument("--profile", required=True)
     batch.add_argument("--preflight-decisions", type=Path, required=True)
     batch.add_argument("--output", type=Path, default=OUTPUT_ROOT)
     batch.add_argument("--store-config", type=Path, default=STORE_CONFIG)

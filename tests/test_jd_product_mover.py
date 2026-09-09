@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from jd_product_mover import (  # noqa: E402
     base_title,
+    build_listing,
     extract_javascript_object,
     infer_prefix,
     expected_source_category_id,
@@ -29,7 +30,13 @@ from jd_product_mover import (  # noqa: E402
     variant_style_and_size,
 )
 from jdo_listing_mvp import (  # noqa: E402
+    JdoError,
+    configure_jdo_profile,
+    decode_process_output,
+    mark_jdo_store_verified,
     multi_set_manifest_errors,
+    run_jdo,
+    run_jdo_large,
     sale_attribute_components,
     shared_image_audit,
     validate_manifest,
@@ -40,15 +47,26 @@ from jd_product_pipeline import (  # noqa: E402
     existing_video_materials,
     load_batch_preflight_decisions,
     PipelineError,
-    product_apply_rejection,
-    query_video_relations,
     record_batch_preflight_skip,
     record_pipeline_exception,
+    product_apply_rejection,
+    query_video_relations,
     save_state,
     validate_store_config,
     video_is_ready,
     video_relation_audit,
     video_upload_url_params,
+)
+from taobao_product_mvp import (  # noqa: E402
+    build_source,
+    detail_image_urls,
+    split_source_by_style,
+    update_local_video_metadata,
+)
+from publish_local_draft import (  # noqa: E402
+    existing_product_id,
+    require_publish_confirmation,
+    reuse_split_uploaded_images,
 )
 
 
@@ -56,6 +74,234 @@ class ProductMoverTests(unittest.TestCase):
     def setUp(self):
         rules_path = ROOT / "config" / "modern-decorative-painting.rules.json"
         self.rules = json.loads(rules_path.read_text(encoding="utf-8"))
+        configure_jdo_profile("test-profile")
+
+    def test_jdo_output_decoder_preserves_gb18030_chinese(self):
+        payload = '{"success":true,"data":{"shopName":"示例店铺"}}'
+        self.assertEqual(payload, decode_process_output(payload.encode("gb18030")))
+
+    def test_jdo_subprocess_enables_python_utf8_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / "jdo-cli.exe"
+            executable.write_bytes(b"")
+            completed = type("Completed", (), {
+                "stdout": b'{"success":true}',
+                "stderr": b"",
+            })()
+            with patch.dict("os.environ", {"JDO_CLI_PATH": str(executable)}), patch(
+                "jdo_listing_mvp.subprocess.run", return_value=completed,
+            ) as mocked_run:
+                run_jdo(["status"])
+        environment = mocked_run.call_args.kwargs["env"]
+        self.assertEqual(
+            [str(executable), "status", "--profile", "test-profile"],
+            mocked_run.call_args.args[0],
+        )
+        self.assertEqual("1", environment["PYTHONUTF8"])
+        self.assertEqual("utf-8", environment["PYTHONIOENCODING"])
+
+    def test_jdo_rejects_missing_or_default_profile(self):
+        with self.assertRaisesRegex(JdoError, "明确指定"):
+            configure_jdo_profile("")
+        with self.assertRaisesRegex(JdoError, "default"):
+            configure_jdo_profile("default")
+
+    def test_jdo_write_requires_verified_store_identity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            body_path = Path(temp_dir) / "body.json"
+            body_path.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(JdoError, "店铺身份"):
+                run_jdo_large(
+                    url="/rest/example",
+                    method="POST",
+                    body_path=body_path,
+                    skill_id="test-skill",
+                    yes=True,
+                )
+
+    def test_jdo_write_request_binds_verified_profile(self):
+        mark_jdo_store_verified("test-profile", 123, "测试店铺")
+        captured_request = {}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            body_path = Path(temp_dir) / "body.json"
+            body_path.write_text("{}", encoding="utf-8")
+            completed = type("Completed", (), {
+                "stdout": '{"success":true}',
+                "stderr": "",
+            })()
+
+            def run_bridge(command, **kwargs):
+                request_path = Path(command[command.index("--request") + 1])
+                captured_request.update(json.loads(request_path.read_text(encoding="utf-8")))
+                return completed
+
+            with patch("jdo_listing_mvp.PYTHON312_CANDIDATES", (Path(sys.executable),)), patch(
+                "jdo_listing_mvp.ensure_jdo_runtime", return_value=Path(temp_dir) / "runtime.pyc",
+            ), patch(
+                "jdo_listing_mvp.recheck_verified_jdo_store",
+                return_value={"profile": "test-profile", "venderId": 123, "shopName": "测试店铺"},
+            ), patch(
+                "jdo_listing_mvp.uuid.uuid4",
+                return_value=type("Uuid", (), {"hex": "test"})(),
+            ), patch(
+                "jdo_listing_mvp.JDO_RUNTIME", Path(temp_dir) / "runtime.pyc",
+            ), patch(
+                "jdo_listing_mvp.subprocess.run", side_effect=run_bridge,
+            ) as mocked_run:
+                run_jdo_large(
+                    url="/rest/example",
+                    method="POST",
+                    body_path=body_path,
+                    skill_id="test-skill",
+                    yes=True,
+                )
+        self.assertEqual("test-profile", captured_request["profile"])
+        self.assertTrue(mocked_run.called)
+
+    def test_taobao_source_keeps_only_variable_sales_dimensions_and_real_prices(self):
+        response = {
+            "item": {"itemId": "1", "title": "自粘贴画", "images": ["//img/main.jpg"], "videos": []},
+            "seller": {"sellerId": "2", "shopId": "3", "shopName": "测试店"},
+            "skuBase": {
+                "props": [
+                    {"pid": "color", "name": "颜色分类", "values": [
+                        {"vid": "a", "name": "山前有路", "image": "//img/a.jpg"},
+                        {"vid": "b", "name": "曙光初现", "image": "//img/b.jpg"},
+                    ]},
+                    {"pid": "mount", "name": "组合形式", "values": [{"vid": "m", "name": "自带背胶"}]},
+                    {"pid": "size", "name": "尺寸", "values": [
+                        {"vid": "s", "name": "宽40cm*高60cm"},
+                        {"vid": "l", "name": "宽60cmx高90cm"},
+                    ]},
+                    {"pid": "frame", "name": "外框类型", "values": [{"vid": "n", "name": "无框"}]},
+                ],
+                "skus": [
+                    {"skuId": "11", "propPath": "color:a;mount:m;size:s;frame:n"},
+                    {"skuId": "12", "propPath": "color:b;mount:m;size:l;frame:n"},
+                ],
+            },
+            "skuCore": {"sku2info": {
+                "11": {"price": {"priceMoney": "780"}, "subPrice": {"priceMoney": "686"}},
+                "12": {"price": {"priceMoney": "1500"}, "subPrice": {"priceMoney": "1320"}},
+            }},
+        }
+        source = build_source(response, {"images": []}, "https://item.taobao.com/item.htm?id=1&skuId=11")
+        self.assertEqual({"color": "颜色", "size": "尺寸"}, source["saleProperties"])
+        self.assertEqual(["6.86", "13.20"], [row["sourcePrice"] for row in source["variants"]])
+        self.assertEqual({"组合形式": ["自带背胶"], "外框类型": ["无框"]}, source["sourceFixedSkuProperties"])
+
+    def test_taobao_detail_images_preserve_dom_order(self):
+        payload = {"images": [
+            {"attrs": {"data-name": "singleImage", "data-src": "//img/1.jpg"}},
+            {"attrs": {"data-name": "singleImage", "data-src": "https://img/2.jpg"}},
+            {"attrs": {"src": "chrome-extension://ignored/icon.png"}},
+        ]}
+        self.assertEqual(["https://img/1.jpg", "https://img/2.jpg"], detail_image_urls(payload))
+
+    def test_taobao_source_splits_balanced_complete_style_groups(self):
+        source = {
+            "sourceSku": "771157084239",
+            "sourceSpu": "771157084239",
+            "title": "玄关装饰画",
+            "fullTitle": "玄关装饰画",
+            "saleProperties": {"color": "颜色", "size": "尺寸"},
+            "variants": [
+                {
+                    "sourceSku": f"{style:02d}-{size:02d}",
+                    "sourceAttributes": {
+                        "颜色": f"款式{style:02d}",
+                        "尺寸": "【定制尺寸】联系客服下单" if size == 10 else f"尺寸{size:02d}",
+                    },
+                }
+                for style in range(1, 51)
+                for size in range(1, 11)
+            ],
+        }
+
+        parts = split_source_by_style(source, 299)
+
+        self.assertEqual([250, 250], [len(part["variants"]) for part in parts])
+        self.assertEqual([25, 25], [part["splitInfo"]["styleCount"] for part in parts])
+        self.assertEqual(["771157084239-P01", "771157084239-P02"], [part["sourceSpu"] for part in parts])
+        self.assertEqual(500, len({row["sourceSku"] for part in parts for row in part["variants"]}))
+        self.assertTrue(all(
+            row["sourceAttributes"]["尺寸"] != "【定制尺寸】联系客服下单"
+            for part in parts for row in part["variants"]
+        ))
+        self.assertEqual(
+            {f"款式{style:02d}" for style in range(1, 26)},
+            {row["sourceAttributes"]["颜色"] for row in parts[0]["variants"]},
+        )
+
+    def test_taobao_split_without_video_skips_video_metadata(self):
+        source = {"video": None}
+        self.assertIs(source, update_local_video_metadata(source, Path(".")))
+
+    def test_split_draft_reuses_uploaded_common_images_by_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "123-P01_A组"
+            second = root / "123-P02_B组"
+            for folder in (first, second):
+                (folder / ".pipeline").mkdir(parents=True)
+                (folder / "详情图").mkdir()
+                (folder / "详情图" / "详情图001.png").write_bytes(b"same-image")
+                (folder / "manifest.json").write_text(json.dumps({
+                    "sourceParentSku": "123",
+                }), encoding="utf-8")
+            (first / ".pipeline" / "listing.uploaded.json").write_text(json.dumps({
+                "images": [{
+                    "localPath": "详情图/详情图001.png",
+                    "upload": {"status": "uploaded", "imgId": "1", "imgUrl": "https://img/1"},
+                }],
+            }), encoding="utf-8")
+            listing = {"images": [{
+                "localPath": "详情图/详情图001.png",
+                "upload": {"status": "pending", "imgId": "", "imgUrl": ""},
+            }]}
+
+            reused = reuse_split_uploaded_images(second, {"sourceParentSku": "123"}, listing)
+
+            self.assertEqual(1, reused)
+            self.assertEqual("uploaded", listing["images"][0]["upload"]["status"])
+            self.assertEqual("1", listing["images"][0]["upload"]["imgId"])
+
+    def test_local_draft_resume_never_searches_or_creates_when_product_id_exists(self):
+        with patch("publish_local_draft.pipeline.find_existing_product") as find_existing:
+            product_id, existing = existing_product_id({"productId": 10001234567890}, "961562277885")
+        self.assertEqual(10001234567890, product_id)
+        self.assertIsNone(existing)
+        find_existing.assert_not_called()
+
+    def test_local_draft_requires_publish_confirmation_before_any_write(self):
+        with self.assertRaisesRegex(PipelineError, "PUBLISH_TO_JD"):
+            require_publish_confirmation("")
+        require_publish_confirmation("PUBLISH_TO_JD")
+
+    def test_product_apply_rejection_detects_keeper_rejection(self):
+        with patch("jd_product_pipeline.jingmai.get") as get:
+            get.side_effect = [
+                {"data": {"applyInfo": {"draftComputeStatus": 3, "bossAuditStatus": -1}}},
+                {"data": [{
+                    "productId": 10036061623956,
+                    "status": 300,
+                    "keeperStatus": 309,
+                    "pushStatus": 100,
+                }]},
+            ]
+            rejection = product_apply_rejection(10036061623956)
+        self.assertEqual(3, rejection["draftComputeStatus"])
+        self.assertEqual(300, rejection["status"])
+        self.assertEqual(309, rejection["keeperStatus"])
+        self.assertEqual(100, rejection["pushStatus"])
+
+    def test_product_apply_rejection_ignores_non_rejected_apply(self):
+        with patch("jd_product_pipeline.jingmai.get") as get:
+            get.return_value = {
+                "data": {"applyInfo": {"draftComputeStatus": 2, "bossAuditStatus": -1}},
+            }
+            self.assertIsNone(product_apply_rejection(10036061623956))
+        self.assertEqual(1, get.call_count)
 
     def test_extract_javascript_object_handles_strings_and_trailing_commas(self):
         page = 'window._itemOnly = ({"text":"}); still text","rows":[1,2,],}); next();'
@@ -175,6 +421,37 @@ class ProductMoverTests(unittest.TestCase):
             "家规家训挂图家风挂画新中式书法装饰客厅书房背景墙卷轴壁画装饰",
             listing_title(source, "艺诚轩"),
         )
+
+    def test_listing_uses_source_platform_product_key_prefix(self):
+        source = {
+            "sourceUrl": "https://item.taobao.com/item.htm?id=771157084239",
+            "sourceSku": "771157084239",
+            "sourceSpu": "771157084239",
+            "collectedAt": "2026-09-10T00:00:00+08:00",
+            "productKeyPrefix": "TB",
+            "title": "现代简约装饰画",
+            "sourceBrandName": "",
+            "categoryIds": [35381],
+            "saleProperties": {"color": "颜色"},
+            "variants": [{
+                "sourceSku": "1",
+                "sourcePrice": "10.00",
+                "sourceAttributes": {"颜色": "款式一"},
+                "skuImage": "主图.jpg",
+            }],
+            "mainImages": [],
+            "detailImages": [],
+        }
+        reference = {
+            "componentCatalog": [{
+                "path": "root/SKUS/VenderCategoryValue",
+                "componentCode": "sale-prop-1001080021",
+                "title": "颜色",
+            }],
+            "media": {"defaultCategoryId": 1},
+        }
+        listing = build_listing(source, ROOT, self.rules, reference, 10000)
+        self.assertEqual("TB-771157084239", listing["product"]["productKey"])
 
     def test_video_response_prefers_high_quality(self):
         payload = 'videoUrlCB({"errcode":0,"result":{"data":[{"sharpness":"low","main_url":"low.mp4"},{"sharpness":"high","main_url":"high.mp4"},{"sharpness":"yuanhua","main_url":"source.mp4"}],"imageUrls":["cover.jpg"],"videoDuration":53,"videoSize":82}});'
@@ -486,13 +763,21 @@ class ProductMoverTests(unittest.TestCase):
 
     def test_store_config_controls_identity_and_freight_template(self):
         store_config = {
-            "store": {"venderId": 123, "shopName": "测试店铺"},
+            "store": {"profile": "test-profile", "venderId": 123, "shopName": "测试店铺"},
             "business": {"freightTemplateId": 456, "freightTemplateLabel": "测试模板"},
         }
-        validate_store_config(store_config)
+        validate_store_config(store_config, "test-profile")
         rules = effective_rules(self.rules, store_config)
         self.assertEqual(456, rules["productDefaults"]["freightTemplateId"])
         self.assertEqual("测试模板", rules["productDefaults"]["freightTemplateLabel"])
+
+    def test_store_config_rejects_profile_mismatch(self):
+        store_config = {
+            "store": {"profile": "store-alpha", "venderId": 123, "shopName": "测试店铺"},
+            "business": {"freightTemplateId": 456, "freightTemplateLabel": "测试模板"},
+        }
+        with self.assertRaisesRegex(ValueError, "Profile"):
+            validate_store_config(store_config, "store-beta")
 
     def test_store_config_rejects_unconfigured_placeholders(self):
         with self.assertRaisesRegex(ValueError, "venderId"):
@@ -540,31 +825,6 @@ class ProductMoverTests(unittest.TestCase):
             self.assertEqual("PRODUCT_PROPAGATION_PENDING", state["stage"])
             self.assertEqual(10036059566777, state["productId"])
             self.assertNotIn("error", state)
-
-    def test_product_apply_rejection_detects_keeper_rejection(self):
-        with patch("jd_product_pipeline.jingmai.get") as get:
-            get.side_effect = [
-                {"data": {"applyInfo": {"draftComputeStatus": 3, "bossAuditStatus": -1}}},
-                {"data": [{
-                    "productId": 10036061623956,
-                    "status": 300,
-                    "keeperStatus": 309,
-                    "pushStatus": 100,
-                }]},
-            ]
-            rejection = product_apply_rejection(10036061623956)
-        self.assertEqual(3, rejection["draftComputeStatus"])
-        self.assertEqual(300, rejection["status"])
-        self.assertEqual(309, rejection["keeperStatus"])
-        self.assertEqual(100, rejection["pushStatus"])
-
-    def test_product_apply_rejection_ignores_non_rejected_apply(self):
-        with patch("jd_product_pipeline.jingmai.get") as get:
-            get.return_value = {
-                "data": {"applyInfo": {"draftComputeStatus": 2, "bossAuditStatus": -1}},
-            }
-            self.assertIsNone(product_apply_rejection(10036061623956))
-        self.assertEqual(1, get.call_count)
 
     def test_product_apply_rejected_state_survives_outer_exception_handler(self):
         with tempfile.TemporaryDirectory() as directory:

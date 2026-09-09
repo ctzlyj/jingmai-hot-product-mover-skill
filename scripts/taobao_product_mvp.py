@@ -289,6 +289,7 @@ def main() -> int:
     parser.add_argument("--detail-dom", type=Path, required=True)
     parser.add_argument("--source-url", required=True)
     parser.add_argument("--duplicate-review", type=Path, required=True)
+    parser.add_argument("--profile", required=True)
     parser.add_argument("--output-root", type=Path, default=ROOT / "outputs" / "migrations")
     args = parser.parse_args()
 
@@ -296,7 +297,7 @@ def main() -> int:
     if duplicate_review.get("decision") != "PROCEED":
         raise ValueError("淘宝 MVP 仅在 AI 判重结论为 PROCEED 时生成")
     store_config = mover.read_json(ROOT / "config" / "store.local.json")
-    store = pipeline.verify_store_identity(store_config)
+    store = pipeline.verify_store_identity(store_config, args.profile)
     rules = taobao_rules(pipeline.effective_rules(
         mover.read_json(ROOT / "config" / "modern-decorative-painting.rules.json"), store_config,
     ))
