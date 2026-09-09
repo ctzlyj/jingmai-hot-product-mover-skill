@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI duplicate review record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sourceSku",
+    "candidateTitle",
+    "candidateCategory",
+    "decision",
+    "matchType",
+    "matchedProductId",
+    "matchedBatchSourceSku",
+    "matchedTitle",
+    "matchedCategory",
+    "reason",
+    "confidence",
+    "evidence"
+  ],
+  "properties": {
+    "sourceSku": {"type": "string", "minLength": 1},
+    "candidateTitle": {"type": "string", "minLength": 1},
+    "candidateCategory": {"type": ["string", "object"]},
+    "decision": {"enum": ["PROCEED", "SKIPPED_AI_DUPLICATE"]},
+    "matchType": {"enum": ["none", "existing_product", "earlier_batch_item"]},
+    "matchedProductId": {"type": ["string", "integer", "null"]},
+    "matchedBatchSourceSku": {"type": ["string", "null"]},
+    "matchedTitle": {"type": ["string", "null"]},
+    "matchedCategory": {"type": ["string", "object", "null"]},
+    "reason": {"type": "string", "minLength": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coreMeaning", "patternAndStyle", "formAndMaterial", "useScenario"],
+      "properties": {
+        "coreMeaning": {"type": "string", "minLength": 1},
+        "patternAndStyle": {"type": "string", "minLength": 1},
+        "formAndMaterial": {"type": "string", "minLength": 1},
+        "useScenario": {"type": "string", "minLength": 1},
+        "saleAttributes": {"type": "string"},
+        "visualEvidence": {"type": "string"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "PROCEED"}}},
+      "then": {"properties": {"matchType": {"const": "none"}}}
+    },
+    {
+      "if": {"properties": {"decision": {"const": "SKIPPED_AI_DUPLICATE"}}},
+      "then": {"properties": {"matchType": {"enum": ["existing_product", "earlier_batch_item"]}}}
+    }
+  ]
+}

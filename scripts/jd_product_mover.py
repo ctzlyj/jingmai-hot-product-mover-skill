@@ -232,7 +232,7 @@ def parse_detail_urls(payload: str) -> list[str]:
 def normalize_size(value: str) -> str:
     normalized = value.strip().replace("厘米", "cm")
     match = re.search(
-        r"(?:宽)?\s*(\d+(?:\.\d+)?)\s*(?:cm)?\s*[xX×*]\s*(?:高)?\s*(\d+(?:\.\d+)?)\s*(?:cm)?",
+        r"(?:宽)?\s*(\d+(?:\.\d+)?)\s*(?:cm)?\s*(?:[xX×*]|-{1,3}|[—–])\s*(?:高)?\s*(\d+(?:\.\d+)?)\s*(?:cm)?",
         normalized,
         re.I,
     )
@@ -248,7 +248,28 @@ def normalize_size(value: str) -> str:
     return f"{width}×{height}cm"
 
 
+def normalize_dimension_alias(value: str) -> str:
+    alias = value.strip()
+    if not alias:
+        raise MoverError("销售属性值为空")
+    try:
+        return normalize_size(alias)
+    except MoverError:
+        return alias
+
+
+def safe_sale_alias(value: str) -> str:
+    result = re.sub(r"\s+", " ", value).strip()
+    while result and sum(1 if character.isascii() else 2 for character in result) > 48:
+        result = result[:-1].rstrip()
+    if not result:
+        raise MoverError("销售属性别名为空")
+    return result
+
+
 def size_sort_key(value: str) -> tuple[Decimal, Decimal, str]:
+    if value == "单规格":
+        return Decimal("0"), Decimal("0"), value
     match = re.fullmatch(r"(\d+(?:\.\d+)?)×(\d+(?:\.\d+)?)cm", value)
     if match:
         width = Decimal(match.group(1))
@@ -263,10 +284,18 @@ def size_sort_key(value: str) -> tuple[Decimal, Decimal, str]:
     return length, Decimal("0"), value
 
 
+def ordered_size_aliases(values: list[str]) -> list[str]:
+    unique = list(dict.fromkeys(values))
+    try:
+        return sorted(unique, key=size_sort_key)
+    except MoverError:
+        return unique
+
+
 def split_style_and_size(value: str, fallback_style: str) -> tuple[str, str]:
     normalized = value.strip().replace("厘米", "cm")
     dimension = re.search(
-        r"(?:宽)?\s*\d+(?:\.\d+)?\s*(?:cm)?\s*[xX×*]\s*(?:高)?\s*\d+(?:\.\d+)?\s*(?:cm)?",
+        r"(?:宽)?\s*\d+(?:\.\d+)?\s*(?:cm)?\s*(?:[xX×*]|-{1,3}|[—–])\s*(?:高)?\s*\d+(?:\.\d+)?\s*(?:cm)?",
         normalized,
         re.I,
     )
@@ -281,6 +310,17 @@ def split_style_and_size(value: str, fallback_style: str) -> tuple[str, str]:
         style = (normalized[:single.start()] + " " + normalized[single.end():]).strip()
     style = re.sub(r"\s+", " ", style).strip(" -_/，,；;：:")
     return style or fallback_style, size
+
+
+def variant_style_and_size(
+    value: str, fallback_style: str, *, allow_single_spec: bool,
+) -> tuple[str, str]:
+    try:
+        return split_style_and_size(value, fallback_style)
+    except MoverError:
+        if not allow_single_spec:
+            raise
+        return value.strip() or fallback_style, "单规格"
 
 
 def base_title(full_title: str, sale_values: list[str]) -> str:
@@ -336,6 +376,38 @@ def infer_subject(title: str, rules: dict[str, Any]) -> dict[str, str]:
             return {"valueId": str(rule["valueId"]), "label": str(rule["label"])}
     default = subject["default"]
     return {"valueId": str(default["valueId"]), "label": str(default["label"])}
+
+
+def required_sku_attribute_values(
+    required_components: list[dict[str, Any]], rules: dict[str, Any],
+) -> list[dict[str, str]]:
+    sku_rules = rules.get("skuAttributes") or {}
+    defaults = sku_rules.get("requiredDefaults") or {}
+    legacy_defaults: dict[str, dict[str, str]] = {}
+    for key, title in (("mounting", "装裱"), ("subject", "题材")):
+        default = (sku_rules.get(key) or {}).get("default") or {}
+        if default.get("valueId"):
+            legacy_defaults[title] = {
+                "valueId": str(default["valueId"]),
+                "label": str(default.get("label") or ""),
+            }
+    resolved: list[dict[str, str]] = []
+    missing: list[str] = []
+    for component in required_components:
+        code = str(component.get("componentCode") or "")
+        title = str(component.get("title") or code)
+        default = defaults.get(code) or defaults.get(title) or legacy_defaults.get(title)
+        if not default or not default.get("valueId"):
+            missing.append(title)
+            continue
+        resolved.append({
+            "componentCode": code,
+            "valueId": str(default["valueId"]),
+            "label": str(default.get("label") or ""),
+        })
+    if missing:
+        raise MoverError(f"类目存在未适配的必填SKU属性：{missing}")
+    return resolved
 
 
 def infer_scenes(title: str, rules: dict[str, Any]) -> list[dict[str, str]]:
@@ -613,23 +685,49 @@ def video_handoff(folder: Path, listing: dict[str, Any]) -> dict[str, Any] | Non
     }
 
 
+def expected_source_category_id(rules: dict[str, Any]) -> int:
+    category = rules["category"]
+    return int(category.get("sourceId") or category["id"])
+
+
 def build_listing(
     source: dict[str, Any], folder: Path, rules: dict[str, Any],
     reference: dict[str, Any], style_start: int,
 ) -> dict[str, Any]:
-    expected_category = int(rules["category"]["id"])
+    expected_category = expected_source_category_id(rules)
     if not source.get("categoryIds") or int(source["categoryIds"][-1]) != expected_category:
-        raise MoverError(f"源商品末级类目不是现代装饰画{expected_category}：{source.get('categoryIds')}")
+        raise MoverError(f"源商品类目与规则不一致，预期来源类目{expected_category}：{source.get('categoryIds')}")
     product_key = f"JD-{source['sourceSpu']}"
     source_title = source["title"]
     title = listing_title(source_title, str(source.get("sourceBrandName") or ""))
     prefix = infer_prefix(source_title, rules)
     scenes = infer_scenes(source_title, rules)
-    subject = infer_subject(source_title, rules)
-    mounting = rules["skuAttributes"]["mounting"]["default"]
+    sku_rules = rules.get("skuAttributes") or {}
+    subject = infer_subject(source_title, rules) if sku_rules.get("subject") else {"valueId": "", "label": ""}
+    mounting = (sku_rules.get("mounting") or {}).get("default") or {"valueId": "", "label": ""}
     sale_names = list(source.get("saleProperties", {}).values())
     has_style_dimension = len(sale_names) >= 2 and sale_names[0] not in {"尺寸", "规格"}
     fallback_style = infer_style_alias(source_title)
+    component_catalog = reference.get("componentCatalog") or []
+    sale_components = [
+        item for item in component_catalog
+        if item.get("path") == "root/SKUS/VenderCategoryValue"
+        and str(item.get("componentCode") or "").startswith("sale-prop-")
+    ]
+    style_sale_component = next(
+        (item for item in sale_components if str(item.get("title") or "") in {"颜色", "款式", "规格"}),
+        sale_components[0] if sale_components else None,
+    )
+    size_sale_component = next(
+        (item for item in sale_components if str(item.get("title") or "") in {"尺寸", "尺码"}),
+        sale_components[1] if len(sale_components) > 1 else None,
+    )
+    sale_attribute_defaults = rules.get("saleAttributes") or {}
+    required_sku_attributes = [
+        item for item in component_catalog
+        if item.get("path") == "root/SKUS/SkuAttr" and item.get("required")
+    ]
+    resolved_sku_attributes = required_sku_attribute_values(required_sku_attributes, rules)
 
     prepared: list[dict[str, Any]] = []
     for variant in source["variants"]:
@@ -639,9 +737,11 @@ def build_listing(
             style = values[0]
             vendor_style = style
             size_source = " ".join(values[1:])
-            size = normalize_size(size_source)
+            size = normalize_dimension_alias(size_source)
         elif len(sale_names) == 1 and values:
-            vendor_style, size = split_style_and_size(values[0], fallback_style)
+            vendor_style, size = variant_style_and_size(
+                values[0], fallback_style, allow_single_spec=len(sale_names) == 1,
+            )
             style = values[0].strip() if vendor_style != fallback_style else fallback_style
         else:
             style = fallback_style
@@ -653,26 +753,36 @@ def build_listing(
             size = normalize_size(size_source)
         prepared.append({
             **variant,
-            "style": style.strip(),
-            "vendorStyle": vendor_style.strip(),
-            "size": size,
+            "style": safe_sale_alias(style),
+            "vendorStyle": safe_sale_alias(vendor_style),
+            "size": safe_sale_alias(size),
         })
     style_names = list(dict.fromkeys(item["style"] for item in prepared))
-    size_names = sorted(set(item["size"] for item in prepared), key=size_sort_key)
+    size_names = ordered_size_aliases([item["size"] for item in prepared])
     vendor_style_names = list(dict.fromkeys(item["vendorStyle"] for item in prepared))
     style_orders = {name: index for index, name in enumerate(style_names, start=1)}
     size_orders = {name: index for index, name in enumerate(size_names, start=1)}
     vendor_style_orders = {name: index for index, name in enumerate(vendor_style_names, start=1)}
     vendor_size_orders: dict[tuple[str, str], int] = {}
     for vendor_style in vendor_style_names:
-        sizes = sorted(
-            {item["size"] for item in prepared if item["vendorStyle"] == vendor_style},
-            key=size_sort_key,
-        )
+        sizes = ordered_size_aliases([
+            item["size"] for item in prepared if item["vendorStyle"] == vendor_style
+        ])
         for order, size in enumerate(sizes, start=1):
             vendor_size_orders[(vendor_style, size)] = order
 
     defaults = rules["productDefaults"]
+    category_attributes = [*rules["categoryAttributes"]]
+    if any(item.get("componentCode") == "prop-product-243294" for item in component_catalog):
+        category_attributes.append({
+            "componentCode": "prop-product-243294",
+            "attrName": "适用场景",
+            "inputType": "multiSelect",
+            "required": True,
+            "valueIds": [item["valueId"] for item in scenes],
+            "valueLabels": [item["label"] for item in scenes],
+        })
+
     listing: dict[str, Any] = {
         "schemaVersion": 1,
         "scene": "pop",
@@ -706,19 +816,21 @@ def build_listing(
             "defaultMediaCategoryId": reference["media"]["defaultCategoryId"],
             "vendorSkuPrefix": prefix,
             "vendorStyleStart": style_start,
+            "saleAttributeComponents": {
+                "style": ({
+                    "componentCode": style_sale_component["componentCode"],
+                    "attrName": style_sale_component.get("title") or "颜色",
+                    **(sale_attribute_defaults.get("style") or {}),
+                } if style_sale_component else None),
+                "size": ({
+                    "componentCode": size_sale_component["componentCode"],
+                    "attrName": size_sale_component.get("title") or "尺寸",
+                    **(sale_attribute_defaults.get("size") or {}),
+                } if size_sale_component else None),
+            },
         },
         "skus": [],
-        "categoryAttributes": [
-            *rules["categoryAttributes"],
-            {
-                "componentCode": "prop-product-243294",
-                "attrName": "适用场景",
-                "inputType": "multiSelect",
-                "required": True,
-                "valueIds": [item["valueId"] for item in scenes],
-                "valueLabels": [item["label"] for item in scenes],
-            },
-        ],
+        "categoryAttributes": category_attributes,
         "video": source.get("video"),
         "images": [],
     }
@@ -749,6 +861,7 @@ def build_listing(
             "vendorSizeOrder": vendor_size_orders[(item["vendorStyle"], item["size"])],
             "sourceSku": item["sourceSku"],
             "sourcePrice": float(Decimal(item["sourcePrice"])),
+            "skuAttributes": [dict(attribute) for attribute in resolved_sku_attributes],
         })
         listing["images"].append({
             "imageKey": f"SKU-MAIN-{index:03d}",

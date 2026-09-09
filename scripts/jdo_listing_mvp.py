@@ -182,11 +182,12 @@ def flatten(components: list[dict[str, Any]], path: str = "root") -> list[dict[s
 
 def refresh_reference(
     output: Path, category_id: int = CATEGORY_ID, category_name: str = CATEGORY_NAME,
+    brand_category_id: int | None = None,
 ) -> dict[str, Any]:
     brands = get(
         "jdo-product-publish",
         "/rest/sp-seller/v0/vender-brands",
-        {"queryType": 2, "categoryId": category_id},
+        {"queryType": 2, "categoryId": brand_category_id or category_id},
     ).get("data") or []
     schema_response = get(
         "jdo-product-publish",
@@ -281,6 +282,8 @@ def resolved_vendor_sku(manifest: dict[str, Any], sku: dict[str, Any]) -> str:
 
 
 def size_dimensions(value: str) -> tuple[Decimal, Decimal, str]:
+    if value == "单规格":
+        return Decimal("0"), Decimal("0"), value
     match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*cm\s*", value)
     if match:
         width = Decimal(match.group(1))
@@ -341,7 +344,7 @@ def validate_image(item: dict[str, Any], path: Path) -> tuple[list[str], list[st
 def multi_set_manifest_errors(manifest: dict[str, Any]) -> list[str]:
     product = manifest.get("product") or {}
     errors: list[str] = []
-    if product.get("mainImageMode") != "multi_set":
+    if int((manifest.get("category") or {}).get("id") or 35381) == 35381 and product.get("mainImageMode") != "multi_set":
         errors.append("现代装饰画必须使用多套主图模式（mainImageMode=multi_set）")
 
     style_by_sku = {
@@ -369,8 +372,12 @@ def multi_set_manifest_errors(manifest: dict[str, Any]) -> list[str]:
 def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str, Any]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
-    if int((manifest.get("category") or {}).get("id") or 0) != CATEGORY_ID:
-        errors.append(f"MVP仅支持现代装饰画类目{CATEGORY_ID}")
+    manifest_category_id = int((manifest.get("category") or {}).get("id") or 0)
+    reference_category_id = int((reference.get("category") or {}).get("id") or 0)
+    if not manifest_category_id or manifest_category_id != reference_category_id:
+        errors.append(
+            f"商品类目与实时Schema不一致：商品{manifest_category_id}，参考{reference_category_id}"
+        )
     product = manifest.get("product") or {}
     required_fields = {
         "productKey": "商品内部编号",
@@ -388,7 +395,11 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
         errors.append(f"商品标题超过京东60字符单位限制：当前{title_units}（汉字按2计算）")
     errors.extend(multi_set_manifest_errors(manifest))
     valid_brand_ids = {str(item.get("brandId")) for item in reference.get("brands", [])}
-    if present(product.get("brandId")) and str(product.get("brandId")) not in valid_brand_ids:
+    if (
+        present(product.get("brandId"))
+        and str(product.get("brandId")) != "-1"
+        and str(product.get("brandId")) not in valid_brand_ids
+    ):
         errors.append("品牌ID不在当前店铺可选品牌列表中")
     vendor_sku_prefix = str(product.get("vendorSkuPrefix") or "GZH").strip()
     if not vendor_sku_prefix.isascii() or not vendor_sku_prefix.isalpha() or not vendor_sku_prefix.isupper():
@@ -400,16 +411,22 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
     except (TypeError, ValueError):
         errors.append("商家编码款式起始号必须为整数")
 
-    required_attributes = {
-        "prop-product-243058": "风格",
-        "prop-product-243094": "工艺",
-        "prop-product-243294": "适用场景",
-    }
     attributes = {item.get("componentCode"): item for item in manifest.get("categoryAttributes") or []}
-    for code, label in required_attributes.items():
+    required_attributes = [
+        item for item in reference.get("componentCatalog") or []
+        if item.get("path") == "root/CategoryGroupList" and item.get("required")
+    ]
+    for component in required_attributes:
+        code = str(component.get("componentCode") or "")
+        label = str(component.get("title") or code)
         row = attributes.get(code) or {}
         if not row.get("valueIds") and not row.get("valueLabels"):
             errors.append(f"类目属性缺少：{label} ({code})")
+            continue
+        valid_values = {str(option.get("value")) for option in component.get("options") or []}
+        invalid_values = [str(value) for value in row.get("valueIds") or [] if valid_values and str(value) not in valid_values]
+        if invalid_values:
+            errors.append(f"类目属性值不在实时Schema中：{label} {invalid_values}")
     scene_values = (attributes.get("prop-product-243294") or {}).get("valueIds") or []
     if len(scene_values) > 3:
         errors.append(f"适用场景最多3项，当前{len(scene_values)}项")
@@ -428,17 +445,21 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
     style_orders: dict[str, int] = {}
     size_orders: dict[str, int] = {}
     for index, sku in enumerate(skus, start=1):
-        for field, label in {
+        required_sku_fields = {
             "skuKey": "SKU内部编号",
             "jdPrice": "京东价",
             "stock": "库存",
-            "mountingValueId": "装裱属性ID",
-            "subjectValueId": "题材属性ID",
             "styleAlias": "款式名称",
             "styleMappingId": "款式mappingId",
             "sizeAlias": "规格尺寸",
             "sizeMappingId": "尺寸mappingId",
-        }.items():
+        }
+        if sku.get("skuAttributes") is None:
+            required_sku_fields.update({
+                "mountingValueId": "装裱属性ID",
+                "subjectValueId": "题材属性ID",
+            })
+        for field, label in required_sku_fields.items():
             if not present(sku.get(field)):
                 errors.append(f"SKU第{index}行缺少：{label} ({field})")
         sku_key = str(sku.get("skuKey") or "")
@@ -530,8 +551,10 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
             for alias, expected_order in expected_size_orders.items():
                 if size_orders.get(alias) != expected_order:
                     errors.append(f"尺寸顺序不符合从小到大规则：{alias}应为{expected_order}")
-        except ValueError as exc:
-            errors.append(str(exc))
+        except ValueError:
+            expected_orders = set(range(1, len(size_orders) + 1))
+            if set(size_orders.values()) != expected_orders:
+                errors.append("非物理尺寸规格顺序必须从1开始连续递增")
     images = manifest.get("images") or []
     roles = {item.get("role") for item in images}
     for role in ("spu_main", "sku_main"):
@@ -597,27 +620,49 @@ def property_item(key: str, value: Any) -> dict[str, Any]:
     return {"key": key, "value": value}
 
 
-def sale_attribute_components(sku: dict[str, Any], include_size: bool) -> list[dict[str, Any]]:
+def sale_attribute_components(
+    sku: dict[str, Any], include_size: bool, definitions: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    definitions = definitions or {
+        "style": {"componentCode": "sale-prop-1001080021", "attrName": "颜色"},
+        "size": {"componentCode": "sale-prop-1001080022", "attrName": "尺寸"},
+    }
+    style_definition = definitions.get("style")
+    if not style_definition:
+        return []
+    style_properties = [
+        property_item("attrValueAlias", f"[{sku['styleAlias']}]") ,
+        property_item("attrName", style_definition.get("attrName") or "颜色"),
+        property_item("mappingId", str(sku["styleMappingId"])),
+        property_item("index", "1"),
+        property_item("attrValuesSeqNo", int(sku["styleOrder"])),
+    ]
+    style_value = style_definition.get("valueId")
+    if style_definition.get("useAliasAsValue"):
+        style_value = sku["styleAlias"]
+    if style_value:
+        style_properties.insert(0, property_item("saleAttrValues", f"[{style_value}]"))
     components = [{
-        "componentCode": "sale-prop-1001080021",
-        "properties": [
-            property_item("attrValueAlias", f"[{sku['styleAlias']}]") ,
-            property_item("attrName", "颜色"),
-            property_item("mappingId", str(sku["styleMappingId"])),
-            property_item("index", "1"),
-            property_item("attrValuesSeqNo", int(sku["styleOrder"])),
-        ],
+        "componentCode": style_definition["componentCode"],
+        "properties": style_properties,
     }]
-    if include_size:
+    size_definition = definitions.get("size")
+    if include_size and size_definition:
+        size_properties = [
+            property_item("attrValueAlias", f"[{sku['sizeAlias']}]") ,
+            property_item("attrName", size_definition.get("attrName") or "尺寸"),
+            property_item("mappingId", str(sku["sizeMappingId"])),
+            property_item("index", "2"),
+            property_item("attrValuesSeqNo", int(sku["sizeOrder"])),
+        ]
+        size_value = size_definition.get("valueId")
+        if size_definition.get("useAliasAsValue"):
+            size_value = sku["sizeAlias"]
+        if size_value:
+            size_properties.insert(0, property_item("saleAttrValues", f"[{size_value}]"))
         components.append({
-            "componentCode": "sale-prop-1001080022",
-            "properties": [
-                property_item("attrValueAlias", f"[{sku['sizeAlias']}]") ,
-                property_item("attrName", "尺寸"),
-                property_item("mappingId", str(sku["sizeMappingId"])),
-                property_item("index", "2"),
-                property_item("attrValuesSeqNo", int(sku["sizeOrder"])),
-            ],
+            "componentCode": size_definition["componentCode"],
+            "properties": size_properties,
         })
     return components
 
@@ -664,6 +709,7 @@ def build_publish_schema(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         raise JdoError("；".join(image_mode_errors))
     product = manifest["product"]
     include_size_sale_attribute = bool(product.get("includeSizeSaleAttribute", True))
+    sale_attribute_definitions = product.get("saleAttributeComponents") or None
     images = manifest.get("images") or []
     spu_images = ordered_images(images, "spu_main")
     detail_images = ordered_images(images, "detail")
@@ -730,48 +776,56 @@ def build_publish_schema(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     for sku in manifest.get("skus") or []:
         style_mapping_id = str(sku["styleMappingId"])
         gallery_images = sku_gallery_images(str(sku["skuKey"]), sku_images, shared_sku_images)
+        sku_components = [
+            {"componentCode": "SkuJdprice", "value": str(sku["jdPrice"])},
+            {"componentCode": "SkuStockNum", "value": int(sku["stock"])},
+            {"componentCode": "SkuVendorSku", "value": resolved_vendor_sku(manifest, sku)},
+        ]
+        sku_attributes = sku.get("skuAttributes")
+        if sku_attributes is None:
+            sku_attributes = [
+                {"componentCode": "prop-sku-243118", "valueId": sku["mountingValueId"]},
+                {"componentCode": "prop-sku-243053", "valueId": sku["subjectValueId"]},
+            ]
+        if sku_attributes:
+            sku_components.append({
+                "componentCode": "SkuAttr",
+                "value": [
+                    {
+                        "componentCode": item["componentCode"],
+                        "properties": [property_item("attrValues", f"[{item['valueId']}]")],
+                    }
+                    for item in sku_attributes
+                ],
+            })
+        sku_components.extend([
+            {"componentCode": "SkuEnableStatus", "value": "1" if sku.get("enabled") else "2"},
+            {
+                "componentCode": "SkuMainImage",
+                "value": [
+                    {
+                        "componentCode": "img",
+                        "properties": [
+                            property_item("imgUrl", uploaded_image_url(image)),
+                            property_item("isGgt", 1 if index == 1 else 0),
+                            property_item("isPrimary", 1 if index == 1 else 0),
+                            property_item("imgRefId", style_mapping_id),
+                            property_item("colorId", style_mapping_id),
+                            property_item("orderSort", index),
+                        ],
+                    }
+                    for index, image in enumerate(gallery_images, start=1)
+                ],
+            },
+        ])
+        sale_components = sale_attribute_components(
+            sku, include_size_sale_attribute, sale_attribute_definitions,
+        )
+        if sale_components:
+            sku_components.append({"componentCode": "VenderCategoryValue", "value": sale_components})
         sku_values.append({
             "componentCode": "SKU",
-            "value": [
-                {"componentCode": "SkuJdprice", "value": str(sku["jdPrice"])},
-                {"componentCode": "SkuStockNum", "value": int(sku["stock"])},
-                {"componentCode": "SkuVendorSku", "value": resolved_vendor_sku(manifest, sku)},
-                {
-                    "componentCode": "SkuAttr",
-                    "value": [
-                        {
-                            "componentCode": "prop-sku-243118",
-                            "properties": [property_item("attrValues", f"[{sku['mountingValueId']}]")],
-                        },
-                        {
-                            "componentCode": "prop-sku-243053",
-                            "properties": [property_item("attrValues", f"[{sku['subjectValueId']}]")],
-                        },
-                    ],
-                },
-                {"componentCode": "SkuEnableStatus", "value": "1" if sku.get("enabled") else "2"},
-                {
-                    "componentCode": "SkuMainImage",
-                    "value": [
-                        {
-                            "componentCode": "img",
-                            "properties": [
-                                property_item("imgUrl", uploaded_image_url(image)),
-                                property_item("isGgt", 1 if index == 1 else 0),
-                                property_item("isPrimary", 1 if index == 1 else 0),
-                                property_item("imgRefId", style_mapping_id),
-                                property_item("colorId", style_mapping_id),
-                                property_item("orderSort", index),
-                            ],
-                        }
-                        for index, image in enumerate(gallery_images, start=1)
-                    ],
-                },
-                {
-                    "componentCode": "VenderCategoryValue",
-                    "value": sale_attribute_components(sku, include_size_sale_attribute),
-                },
-            ],
+            "value": sku_components,
         })
     components.append({"componentCode": "SKUS", "value": sku_values})
     return components
@@ -839,7 +893,9 @@ def upload(zone_id: str, category_id: int, path: Path) -> dict[str, Any]:
 
 
 def command_refresh(args: argparse.Namespace) -> int:
-    result = refresh_reference(args.output, args.category_id, args.category_name)
+    result = refresh_reference(
+        args.output, args.category_id, args.category_name, args.brand_category_id,
+    )
     print(json.dumps({
         "ok": True,
         "output": str(args.output),
@@ -1054,11 +1110,22 @@ def query_sku_stocks(sku_ids: list[int]) -> list[dict[str, Any]]:
     return rows
 
 
-def online_style_color_ids(detail: dict[str, Any]) -> dict[str, str]:
+def style_sale_attribute_id(manifest: dict[str, Any]) -> str:
+    component_code = str(
+        ((((manifest.get("product") or {}).get("saleAttributeComponents") or {}).get("style") or {}).get("componentCode"))
+        or "sale-prop-1001080021"
+    )
+    match = re.fullmatch(r"sale-prop-(\d+)", component_code)
+    if not match:
+        raise JdoError(f"款式销售属性组件编码无效：{component_code}")
+    return match.group(1)
+
+
+def online_style_color_ids(detail: dict[str, Any], style_attribute_id: str = "1001080021") -> dict[str, str]:
     result: dict[str, str] = {}
     for sku in detail.get("skuList") or []:
         for attribute in sku.get("saleAttrs") or []:
-            if str(attribute.get("attrId")) != "1001080021":
+            if str(attribute.get("attrId")) != style_attribute_id:
                 continue
             alias = normalized_sale_alias(str(attribute.get("attrValueAlias") or ""))
             color_id = str(attribute.get("attrValues") or attribute.get("mappingId") or "")
@@ -1089,7 +1156,7 @@ def build_shared_image_update_payload(
         current = style_rows.get(alias)
         if current is None or int(sku.get("styleOrder") or 0) < int(current.get("styleOrder") or 0):
             style_rows[alias] = sku
-    online_ids = online_style_color_ids(detail)
+    online_ids = online_style_color_ids(detail, style_sale_attribute_id(manifest))
     missing_styles = sorted(set(style_rows) - set(online_ids))
     if missing_styles:
         raise JdoError(f"线上找不到{len(missing_styles)}个款式颜色ID：{missing_styles[:5]}")
@@ -1199,7 +1266,7 @@ def shared_image_audit(manifest: dict[str, Any], detail: dict[str, Any]) -> dict
         normalized_sale_alias(str(sku.get("styleAlias") or ""))
         for sku in manifest.get("skus") or []
     }
-    online_ids = online_style_color_ids(detail)
+    online_ids = online_style_color_ids(detail, style_sale_attribute_id(manifest))
     groups = {
         str(group.get("uuid")): group.get("imageInfoList") or []
         for group in (detail.get("material") or {}).get("mainImages") or []
@@ -1287,6 +1354,12 @@ def command_verify_product(args: argparse.Namespace) -> int:
     include_size_sale_attribute = bool(
         (manifest.get("product") or {}).get("includeSizeSaleAttribute", True)
     )
+    sale_definitions = (manifest.get("product") or {}).get("saleAttributeComponents") or {
+        "style": {"componentCode": "sale-prop-1001080021"},
+        "size": {"componentCode": "sale-prop-1001080022"},
+    }
+    style_attr_id = str((sale_definitions.get("style") or {}).get("componentCode") or "").removeprefix("sale-prop-")
+    size_attr_id = str((sale_definitions.get("size") or {}).get("componentCode") or "").removeprefix("sale-prop-")
     expected = {
         (
             normalized_sale_alias(str(sku["styleAlias"])),
@@ -1313,9 +1386,9 @@ def command_verify_product(args: argparse.Namespace) -> int:
     for item in actual_skus:
         aliases = sale_aliases(item)
         combination = (
-            normalized_sale_alias(aliases.get("1001080021", "")),
+            normalized_sale_alias(aliases.get(style_attr_id, "")),
             *(
-                [normalized_sale_alias(aliases.get("1001080022", ""))]
+                [normalized_sale_alias(aliases.get(size_attr_id, ""))]
                 if include_size_sale_attribute else []
             ),
         )
@@ -1431,6 +1504,7 @@ def main() -> int:
     refresh.add_argument("--output", type=Path, default=REFERENCE)
     refresh.add_argument("--category-id", type=int, default=CATEGORY_ID)
     refresh.add_argument("--category-name", default=CATEGORY_NAME)
+    refresh.add_argument("--brand-category-id", type=int)
     refresh.set_defaults(handler=command_refresh)
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--input", type=Path, required=True)

@@ -30,7 +30,9 @@
 4. `POST /sp-product/v0/media-zones/{zoneId}/videos` 保存视频记录。
 5. 查询视频列表，等待素材可用。
 6. `GET /sp-product/v0/sku-material-tags` 获取类目视频标签。
-7. 对每个 SKU 单独调用 `POST /sp-product/v0/sku-materials/batch`。
+7. 调用 `GET /sp-product/v0/sku-materials` 查询已有视频素材时，每批最多传 50 个 SKU，并合并所有批次结果。
+8. 对每个 SKU 单独调用 `POST /sp-product/v0/sku-materials/batch`。
+9. 调用 `GET /sp-product/v0/media-zones/{zoneId}/video-sku-rels` 时按 `paginationData.totalItems` 翻页，汇总全部 SKU 后再判断是否全部为 `relationStatus=4`。
 8. `GET /sp-product/v0/media-zones/{zoneId}/video-sku-rels` 轮询关系审核。
 
 ### 关键约束

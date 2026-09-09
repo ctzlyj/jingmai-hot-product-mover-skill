@@ -27,6 +27,11 @@ RULES = ROOT / "config" / "modern-decorative-painting.rules.json"
 STORE_CONFIG = ROOT / "config" / "store.local.json"
 VIDEO_MATERIAL_TYPE = 42
 VIDEO_TYPE = 1
+BATCH_PREFLIGHT_DECISIONS = {
+    "PROCEED",
+    "SKIPPED_OUT_OF_SCOPE_CATEGORY",
+    "SKIPPED_AI_DUPLICATE",
+}
 
 
 class PipelineError(RuntimeError):
@@ -130,13 +135,25 @@ def video_relation_audit(
 def save_state(path: Path, stage: str, **values: Any) -> dict[str, Any]:
     state = mover.read_json(path) if path.exists() else {}
     state.update(values)
+    if not stage.startswith("SKIPPED_"):
+        state.pop("categoryDecision", None)
+        state.pop("preflightDecision", None)
+        state.pop("duplicateReview", None)
     if not stage.startswith("FAILED"):
         state.pop("error", None)
+        state.pop("errors", None)
     state["stage"] = stage
     state["updatedAt"] = mover.now_iso()
     state.setdefault("history", []).append({"stage": stage, "at": state["updatedAt"]})
     mover.write_json(path, state)
     return state
+
+
+def record_pipeline_exception(path: Path, exc: Exception) -> dict[str, Any]:
+    state = mover.read_json(path) if path.exists() else {}
+    if state.get("stage") in {"PRODUCT_PROPAGATION_PENDING", "PRODUCT_APPLY_REJECTED"} and state.get("productId"):
+        return state
+    return save_state(path, "FAILED", error=str(exc))
 
 
 def existing_folder(source_sku: str, output_root: Path) -> Path | None:
@@ -164,6 +181,61 @@ def verify_store_identity(store_config: dict[str, Any]) -> dict[str, Any]:
     if int(shop.get("type", -1)) != 0 or int(shop.get("status") or 0) != 1:
         raise PipelineError(f"店铺不是正常POP状态：{shop}")
     return {"venderId": vender_id, "shopName": shop_name, "shopId": int(shop.get("shopId") or 0)}
+
+
+def product_apply_rejection(product_id: int) -> dict[str, Any] | None:
+    try:
+        detail = jingmai.get(
+            "jdo-product-update",
+            "/rest/sp-product/v0/product-apply/{applyId}",
+            {"applyId": str(product_id), "scene": "pop"},
+        ).get("data") or {}
+    except jingmai.JdoError:
+        return None
+    apply_info = detail.get("applyInfo") or {}
+    draft_status = int(apply_info.get("draftComputeStatus") or 0)
+    if draft_status != 3:
+        return None
+    rejection = {
+        "applyId": str(apply_info.get("applyId") or product_id),
+        "draftComputeStatus": draft_status,
+        "bossAuditStatus": int(apply_info.get("bossAuditStatus") or 0),
+    }
+    try:
+        response = jingmai.get(
+            "jdo-product-update",
+            "/rest/sp-product/v0/product-applies",
+            {
+                "page": 1,
+                "pageSize": 10,
+                "sortBy": "created",
+                "sortType": "desc",
+                "productIdList": [product_id],
+                "scopeSet": [
+                    "productId", "productName", "auditReason", "pushReason",
+                    "pushStatus", "status", "keeperStatus",
+                ],
+            },
+        )
+    except jingmai.JdoError:
+        return rejection
+    row = next(
+        (
+            item for item in response.get("data") or []
+            if int(item.get("productId") or 0) == product_id
+        ),
+        None,
+    )
+    if row:
+        rejection.update({
+            key: row.get(key)
+            for key in (
+                "productName", "status", "keeperStatus", "pushStatus",
+                "auditReason", "pushReason",
+            )
+            if row.get(key) not in (None, "")
+        })
+    return rejection
 
 
 def list_products(category_id: int | None = None, item_num: str | None = None) -> list[dict[str, Any]]:
@@ -196,6 +268,70 @@ def find_existing_product(source_spu: str) -> dict[str, Any] | None:
     return matches[0] if matches else None
 
 
+def load_batch_preflight_decisions(path: Path | None, urls: list[str]) -> dict[str, dict[str, Any]]:
+    if path is None or not path.is_file():
+        raise PipelineError("批量任务缺少完整的 AI/类目预检决策文件")
+    payload = mover.read_json(path)
+    if isinstance(payload, list):
+        records = payload
+    else:
+        records = payload.get("decisions")
+        if records is None:
+            records = [*(payload.get("categorySkips") or []), *(payload.get("aiReviews") or [])]
+    if not isinstance(records, list):
+        raise PipelineError("批量预检决策文件格式错误：缺少 decisions 数组")
+    by_sku: dict[str, dict[str, Any]] = {}
+    for raw in records:
+        if not isinstance(raw, dict):
+            raise PipelineError("批量预检决策必须为对象")
+        source_sku = str(raw.get("sourceSku") or "")
+        decision = str(raw.get("decision") or raw.get("stage") or "")
+        reason = str(raw.get("reason") or "").strip()
+        if not source_sku or decision not in BATCH_PREFLIGHT_DECISIONS or not reason:
+            raise PipelineError(f"批量预检决策字段无效：{raw}")
+        if source_sku in by_sku:
+            raise PipelineError(f"批量预检存在重复源SKU决策：{source_sku}")
+        if decision == "SKIPPED_AI_DUPLICATE" and not (
+            raw.get("matchedProductId") or raw.get("matchedBatchSourceSku")
+        ):
+            raise PipelineError(f"AI重复决策缺少匹配对象：{source_sku}")
+        by_sku[source_sku] = {**raw, "decision": decision, "reason": reason}
+    requested = [mover.source_sku_from_url(url) for url in urls]
+    missing = [source_sku for source_sku in requested if source_sku not in by_sku]
+    if missing:
+        raise PipelineError(f"以下批量链接缺少 AI/类目预检决策：{missing}")
+    return {source_sku: by_sku[source_sku] for source_sku in requested}
+
+
+def record_batch_preflight_skip(
+    *, url: str, output_root: Path, decision: dict[str, Any],
+) -> dict[str, Any]:
+    source_sku = mover.source_sku_from_url(url)
+    state_path = output_root / "state" / f"{source_sku}.json"
+    existing_state = mover.read_json(state_path) if state_path.exists() else {}
+    if existing_state.get("productId"):
+        raise PipelineError(
+            f"源SKU {source_sku} 已存在 productId={existing_state['productId']}，"
+            "不得改写为跳过状态；请按原商品恢复"
+        )
+    stage = str(decision["decision"])
+    save_state(
+        state_path,
+        stage,
+        sourceSku=source_sku,
+        sourceUrl=url,
+        preflightDecision=decision,
+    )
+    return {
+        "ok": True,
+        "skipped": True,
+        "stage": stage,
+        "sourceSku": source_sku,
+        "reason": str(decision["reason"]),
+        "state": str(state_path),
+    }
+
+
 def next_style_start(prefix: str, category_id: int = 35381) -> tuple[int, list[str]]:
     product_rows = list_products(category_id=category_id)
     used: list[str] = []
@@ -223,7 +359,14 @@ def local_draft(
     source_sku = mover.source_sku_from_url(url)
     folder = existing_folder(source_sku, output_root)
     if folder and (folder / "listing.json").exists():
-        listing = mover.read_json(folder / "listing.json")
+        previous = mover.read_json(folder / "listing.json")
+        source = mover.read_json(folder / "manifest.json")
+        style_start = int((previous.get("product") or {}).get("vendorStyleStart") or 10000)
+        listing = mover.build_listing(
+            source, folder, rules, mover.read_json(reference_path), style_start,
+        )
+        mover.write_json(folder / "listing.json", listing)
+        mover.build_audit_workbook(source, listing, folder / f"{folder.name}.xlsx")
         return folder, listing
     source = mover.collect_source(url, mover.HttpClient())
     prefix = mover.infer_prefix(source["title"], rules)
@@ -278,37 +421,52 @@ def query_video(zone_id: str, video_id: int) -> dict[str, Any] | None:
 
 
 def query_video_relations(zone_id: str, video_id: int) -> list[dict[str, Any]]:
-    response = jingmai.get(
-        "jdo-product-material",
-        "/rest/sp-product/v0/media-zones/{zoneId}/video-sku-rels",
-        {
-            "zoneId": zone_id,
-            "videoType": VIDEO_MATERIAL_TYPE,
-            "videoIds": [video_id],
-            "page": 1,
-            "pageSize": 50,
-            "scopeSet": [
-                "videoId", "productId", "skuId", "status", "createdDate",
-                "modifiedDate", "videoType",
-            ],
-        },
-    )
-    return response.get("data") or []
+    relations: list[dict[str, Any]] = []
+    page = 1
+    page_size = 50
+    while True:
+        response = jingmai.get(
+            "jdo-product-material",
+            "/rest/sp-product/v0/media-zones/{zoneId}/video-sku-rels",
+            {
+                "zoneId": zone_id,
+                "videoType": VIDEO_MATERIAL_TYPE,
+                "videoIds": [video_id],
+                "page": page,
+                "pageSize": page_size,
+                "scopeSet": [
+                    "videoId", "productId", "skuId", "status", "createdDate",
+                    "modifiedDate", "videoType",
+                ],
+            },
+        )
+        rows = response.get("data") or []
+        relations.extend(rows)
+        total_items = int((response.get("paginationData") or {}).get("totalItems") or 0)
+        if (total_items and len(relations) >= total_items) or len(rows) < page_size:
+            break
+        page += 1
+    return relations
 
 
 def existing_video_materials(sku_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
-    response = jingmai.get(
-        "jdo-product-material",
-        "/rest/sp-product/v0/sku-materials",
-        {"skuIds": sku_ids, "materialTypes": [VIDEO_MATERIAL_TYPE], "scopeSet": [3]},
-    )
-    return {
-        int(row["skuId"]): [
-            item for item in row.get("materials") or []
-            if int(item.get("materialType") or 0) == VIDEO_MATERIAL_TYPE
-        ]
-        for row in response.get("data") or []
-    }
+    materials_by_sku: dict[int, list[dict[str, Any]]] = {}
+    for start in range(0, len(sku_ids), 50):
+        response = jingmai.get(
+            "jdo-product-material",
+            "/rest/sp-product/v0/sku-materials",
+            {
+                "skuIds": sku_ids[start:start + 50],
+                "materialTypes": [VIDEO_MATERIAL_TYPE],
+                "scopeSet": [3],
+            },
+        )
+        for row in response.get("data") or []:
+            materials_by_sku[int(row["skuId"])] = [
+                item for item in row.get("materials") or []
+                if int(item.get("materialType") or 0) == VIDEO_MATERIAL_TYPE
+            ]
+    return materials_by_sku
 
 
 def automate_main_video(
@@ -648,8 +806,27 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
                 ))
             except jingmai.JdoError as exc:
                 last_result = {"ok": False, "errors": [str(exc)], "attempt": attempt}
-                if "未查询到商品信息" not in str(exc) or attempt >= args.verify_attempts:
+                if "未查询到商品信息" not in str(exc):
                     raise
+                rejection = product_apply_rejection(product_id)
+                if rejection:
+                    save_state(
+                        state_path, "PRODUCT_APPLY_REJECTED", productId=product_id,
+                        productApply=rejection, verification=last_result,
+                    )
+                    raise PipelineError(
+                        f"商品{product_id}申请已驳回，禁止重新创建；请按驳回原因修正原申请"
+                    ) from exc
+                if attempt >= args.verify_attempts:
+                    save_state(
+                        state_path,
+                        "PRODUCT_PROPAGATION_PENDING",
+                        productId=product_id,
+                        verification=last_result,
+                    )
+                    raise PipelineError(
+                        f"商品{product_id}已创建，详情仍在传播；后续仅回查，禁止重新创建"
+                    ) from exc
                 time.sleep(args.verify_interval)
                 continue
             last_result = mover.read_json(verification_path)
@@ -709,7 +886,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         }
     except Exception as exc:
         if lock_path.parent.exists():
-            save_state(state_path, "FAILED", error=str(exc))
+            record_pipeline_exception(state_path, exc)
         raise
     finally:
         lock_path.unlink(missing_ok=True)
@@ -736,6 +913,7 @@ def main() -> int:
     run.add_argument("--video-interval", type=int, default=10)
     batch = commands.add_parser("batch")
     batch.add_argument("--input", type=Path, required=True)
+    batch.add_argument("--preflight-decisions", type=Path, required=True)
     batch.add_argument("--output", type=Path, default=OUTPUT_ROOT)
     batch.add_argument("--store-config", type=Path, default=STORE_CONFIG)
     batch.add_argument("--rules", type=Path, default=RULES)
@@ -759,18 +937,29 @@ def main() -> int:
             ]
             if not urls:
                 raise PipelineError("批量链接文件为空")
+            decisions = load_batch_preflight_decisions(args.preflight_decisions, urls)
             results = []
             for url in urls:
                 item_args = argparse.Namespace(**vars(args), url=url)
                 try:
-                    results.append(run_pipeline(item_args))
+                    source_sku = mover.source_sku_from_url(url)
+                    decision = decisions[source_sku]
+                    if decision["decision"] == "PROCEED":
+                        results.append(run_pipeline(item_args))
+                    else:
+                        results.append(record_batch_preflight_skip(
+                            url=url,
+                            output_root=args.output,
+                            decision=decision,
+                        ))
                 except Exception as exc:
                     results.append({"ok": False, "url": url, "error": str(exc)})
                     break
             result = {
                 "ok": all(item.get("ok") for item in results) and len(results) == len(urls),
                 "requested": len(urls),
-                "completed": sum(bool(item.get("ok")) for item in results),
+                "completed": sum(bool(item.get("ok")) and not item.get("skipped") for item in results),
+                "skipped": sum(bool(item.get("skipped")) for item in results),
                 "results": results,
             }
             if not result["ok"]:
