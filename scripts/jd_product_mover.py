@@ -267,6 +267,17 @@ def safe_sale_alias(value: str) -> str:
     return result
 
 
+def disambiguate_colliding_sizes(rows: list[dict[str, Any]]) -> None:
+    counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        key = (str(row["style"]), str(row["size"]))
+        counts[key] = counts.get(key, 0) + 1
+    for row in rows:
+        key = (str(row["style"]), str(row["size"]))
+        if counts[key] > 1:
+            row["size"] = safe_sale_alias(str(row.get("sourceDimensionAlias") or row["size"]))
+
+
 def size_sort_key(value: str) -> tuple[Decimal, Decimal, str]:
     if value == "单规格":
         return Decimal("0"), Decimal("0"), value
@@ -742,7 +753,7 @@ def build_listing(
             vendor_style, size = variant_style_and_size(
                 values[0], fallback_style, allow_single_spec=len(sale_names) == 1,
             )
-            style = values[0].strip() if vendor_style != fallback_style else fallback_style
+            style = values[0].strip()
         else:
             style = fallback_style
             vendor_style = style
@@ -756,7 +767,9 @@ def build_listing(
             "style": safe_sale_alias(style),
             "vendorStyle": safe_sale_alias(vendor_style),
             "size": safe_sale_alias(size),
+            "sourceDimensionAlias": size_source if has_style_dimension else size,
         })
+    disambiguate_colliding_sizes(prepared)
     style_names = list(dict.fromkeys(item["style"] for item in prepared))
     size_names = ordered_size_aliases([item["size"] for item in prepared])
     vendor_style_names = list(dict.fromkeys(item["vendorStyle"] for item in prepared))

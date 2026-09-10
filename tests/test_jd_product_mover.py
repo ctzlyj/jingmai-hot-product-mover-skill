@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from jd_product_mover import (  # noqa: E402
     base_title,
     build_listing,
+    disambiguate_colliding_sizes,
     extract_javascript_object,
     infer_prefix,
     expected_source_category_id,
@@ -345,6 +346,44 @@ class ProductMoverTests(unittest.TestCase):
             ("百福葫芦装饰贴*6张", "单规格"),
             variant_style_and_size("百福葫芦装饰贴*6张", "默认款式", allow_single_spec=True),
         )
+
+    def test_one_dimension_with_embedded_sizes_keeps_each_source_alias(self):
+        source = {
+            "sourceUrl": "https://mobile.yangkeduo.com/goods.html?goods_id=1",
+            "sourceSku": "1", "sourceSpu": "1",
+            "collectedAt": "2026-09-10T00:00:00+08:00",
+            "sourceBrandName": "", "title": "新中式背靠金山挂画",
+            "categoryIds": [35381], "saleProperties": {"pdd-style": "款式"},
+            "variants": [
+                {"sourceSku": "1-1", "sourcePrice": "2.21", "sourceAttributes": {"款式": "背靠金山20cm*40CM"}, "skuImage": "SKU图/001.jpg"},
+                {"sourceSku": "1-2", "sourcePrice": "4.05", "sourceAttributes": {"款式": "背靠金山30cm*60CM"}, "skuImage": "SKU图/002.jpg"},
+                {"sourceSku": "1-3", "sourcePrice": "2.21", "sourceAttributes": {"款式": "背靠金山"}, "skuImage": "SKU图/003.jpg"},
+            ],
+            "mainImages": [], "detailImages": [], "video": None,
+        }
+        reference = json.loads(
+            (ROOT / "config" / "modern-decorative-painting.reference.json").read_text(encoding="utf-8")
+        )
+        listing = build_listing(source, ROOT, self.rules, reference, 10000)
+        self.assertFalse(listing["product"]["includeSizeSaleAttribute"])
+        self.assertEqual(
+            ["背靠金山20cm*40CM", "背靠金山30cm*60CM", "背靠金山"],
+            [sku["styleAlias"] for sku in listing["skus"]],
+        )
+
+    def test_preflight_checks_duplicates_after_single_dimension_projection(self):
+        manifest = {
+            "category": {"id": 35381},
+            "product": {"productKey": "P1", "title": "测试商品", "brandId": -1, "sevenDayReturnCode": "1", "freightTemplateId": 1, "vendorSkuPrefix": "GZH", "vendorStyleStart": 10000, "includeSizeSaleAttribute": False, "mainImageMode": "multi_set"},
+            "skus": [
+                {"skuKey": "S1", "jdPrice": 10, "stock": 1, "mountingValueId": "1", "subjectValueId": "1", "styleAlias": "背靠金山", "styleMappingId": "style-1", "styleOrder": 1, "vendorStyleOrder": 1, "sizeAlias": "20×40cm", "sizeMappingId": "size-1", "sizeOrder": 1, "vendorSizeOrder": 1},
+                {"skuKey": "S2", "jdPrice": 20, "stock": 1, "mountingValueId": "1", "subjectValueId": "1", "styleAlias": "背靠金山", "styleMappingId": "style-1", "styleOrder": 1, "vendorStyleOrder": 1, "sizeAlias": "30×60cm", "sizeMappingId": "size-2", "sizeOrder": 2, "vendorSizeOrder": 2},
+            ],
+            "images": [],
+        }
+        reference = {"category": {"id": 35381}, "brands": [{"brandId": -1}], "componentCatalog": []}
+        errors, _ = validate_manifest(Path("listing.json"), manifest, reference)
+        self.assertTrue(any("销售属性组合重复：背靠金山" in error for error in errors))
 
     def test_non_physical_second_dimension_keeps_source_alias(self):
         self.assertEqual("【懂的都懂】已走流程", normalize_dimension_alias("【懂的都懂】已走流程"))

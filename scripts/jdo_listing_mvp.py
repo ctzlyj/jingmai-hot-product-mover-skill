@@ -578,6 +578,7 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
         errors.append(f"适用场景最多3项，当前{len(scene_values)}项")
 
     skus = manifest.get("skus") or []
+    include_size_sale_attribute = bool(product.get("includeSizeSaleAttribute", True))
     sku_limit = int((reference.get("schema") or {}).get("extendMap", {}).get("skuBindThresholdNum") or 299)
     if not skus:
         errors.append("至少填写1个SKU")
@@ -585,7 +586,7 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
         errors.append(f"SKU数量超过类目上限：当前{len(skus)}，上限{sku_limit}")
     sku_keys: set[str] = set()
     vendor_skus: set[str] = set()
-    combinations: set[tuple[str, str]] = set()
+    combinations: set[tuple[str, ...]] = set()
     style_mapping_ids: dict[str, str] = {}
     size_mapping_ids: dict[str, str] = {}
     style_orders: dict[str, int] = {}
@@ -633,9 +634,14 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
             size_orders[size_alias] = int(sku.get("sizeOrder") or 0)
         except (TypeError, ValueError):
             errors.append(f"SKU第{index}行款式或尺寸顺序不是整数")
-        combination = (style_alias, size_alias)
+        combination = (
+            (style_alias, size_alias)
+            if include_size_sale_attribute
+            else (style_alias,)
+        )
         if combination in combinations:
-            errors.append(f"销售属性组合重复：{style_alias} / {size_alias}")
+            rendered_combination = " / ".join(combination)
+            errors.append(f"销售属性组合重复：{rendered_combination}")
         combinations.add(combination)
         if weighted_text_length(style_alias) > 50 or weighted_text_length(size_alias) > 50:
             errors.append(f"SKU第{index}行销售属性别名超过50字符")
