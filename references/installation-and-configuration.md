@@ -6,6 +6,7 @@
 - Python 3.13 用于主流程；Python 3.12 用于读取当前 `jdo-cli` 打包运行时并提交大请求体。
 - 已安装并完成 OAuth 登录的 `jdo-cli`。
 - Python 包见根目录 `requirements.txt`。
+- 严格逐项取整定价使用仓库内冻结的纯函数快照，无需另装比价 Skill；验证及升级规则见 `component-rounded-pricing.md`。
 - 可选：`agent-browser`，仅在公开视频地址接口受限时用于浏览器回退。
 
 ## 安装依赖
@@ -87,7 +88,7 @@ Copy-Item config\store.example.json config\store.local.json
 
 ## 发布前自检
 
-1. `jdo-cli status --profile your-store-profile` 显示 OAuth Token 已保存。
+1. 使用 `jdo-cli invoke ... --profile your-store-profile` 调用只读店铺信息接口成功，并确认返回店铺与配置一致；当前 `jdo-cli status` 不支持 `--profile`。
 2. `store.local.json` 不是示例值，且配置 Profile 与命令 Profile 一致。
 3. 实时 reference 文件属于当前登录店铺与目标类目。
 4. 运费模板仍存在且适用于目标商品。

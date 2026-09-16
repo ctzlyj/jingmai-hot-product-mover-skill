@@ -254,12 +254,16 @@ def product_apply_rejection(product_id: int) -> dict[str, Any] | None:
 
 def list_products(category_id: int | None = None, item_num: str | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    expected_total: int | None = None
     page = 1
     while True:
         params: dict[str, Any] = {
             "scopeSet": "productId,productName,productStatus,categoryId,itemNum,created,modified",
             "page": page,
             "pageSize": 50,
+            "sortBy": "created",
+            "sortType": "asc",
         }
         if category_id is not None:
             params["categoryIdList"] = [category_id]
@@ -267,10 +271,23 @@ def list_products(category_id: int | None = None, item_num: str | None = None) -
             params["itemNum"] = item_num
         response = jingmai.get("jdo-product-status", "/rest/sp-product/v0/products", params)
         batch = response.get("data") or []
-        rows.extend(batch)
         pagination = response.get("paginationData") or {}
-        total = int(pagination.get("totalItems") or len(rows))
-        if not batch or len(rows) >= total:
+        if "totalItems" not in pagination or "currentPage" not in pagination:
+            raise PipelineError("商品列表缺少分页元数据，不能确认全量")
+        total = int(pagination["totalItems"])
+        if expected_total is None:
+            expected_total = total
+        if total < 0 or total != expected_total or int(pagination["currentPage"]) != page:
+            raise PipelineError("商品列表总量或页码发生变化，请重新只读扫描")
+        for product in batch:
+            product_id = str(product.get("productId") or "")
+            if not product_id or product_id in seen_ids:
+                raise PipelineError("商品列表存在缺失或重复ID，不能确认全量")
+            seen_ids.add(product_id)
+        rows.extend(batch)
+        if len(rows) > total or (not batch and len(rows) < total):
+            raise PipelineError("商品列表实际数量与分页总量不一致")
+        if len(rows) == total:
             return rows
         page += 1
 
@@ -520,6 +537,7 @@ def automate_main_video(
         jd_video_id = int(upload_info.get("jdVideoId") or 0)
         if not upload_url or not jd_video_id:
             raise PipelineError("获取视频上传地址返回不完整")
+        jingmai.recheck_verified_jdo_store()
         with video_path.open("rb") as handle:
             transfer = requests.post(
                 upload_url,

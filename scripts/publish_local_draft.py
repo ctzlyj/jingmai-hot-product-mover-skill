@@ -70,6 +70,56 @@ def reuse_split_uploaded_images(
     return reused
 
 
+def reuse_shared_uploaded_images(
+    folder: Path, listing: dict[str, Any], cache_path: Path | None, store_key: str,
+) -> int:
+    if cache_path is None or not cache_path.is_file():
+        return 0
+    cache = mover.read_json(cache_path)
+    if str(cache.get("storeKey") or "") != store_key:
+        raise pipeline.PipelineError("共享图片缓存所属店铺不匹配")
+    uploads = cache.get("uploadsBySha256") or {}
+    reused = 0
+    for item in listing.get("images") or []:
+        if (item.get("upload") or {}).get("imgUrl"):
+            continue
+        image_path = folder / str(item.get("localPath") or "")
+        if not image_path.is_file():
+            continue
+        upload = uploads.get(hashlib.sha256(image_path.read_bytes()).hexdigest())
+        if upload and upload.get("imgUrl"):
+            item["upload"] = dict(upload)
+            reused += 1
+    return reused
+
+
+def update_shared_uploaded_images(
+    folder: Path, listing: dict[str, Any], cache_path: Path | None, store_key: str,
+) -> int:
+    if cache_path is None:
+        return 0
+    cache = mover.read_json(cache_path) if cache_path.is_file() else {
+        "schemaVersion": 1,
+        "storeKey": store_key,
+        "uploadsBySha256": {},
+    }
+    if str(cache.get("storeKey") or "") != store_key:
+        raise pipeline.PipelineError("共享图片缓存所属店铺不匹配")
+    uploads = cache.setdefault("uploadsBySha256", {})
+    added = 0
+    for item in listing.get("images") or []:
+        upload = item.get("upload") or {}
+        image_path = folder / str(item.get("localPath") or "")
+        if not upload.get("imgUrl") or not image_path.is_file():
+            continue
+        digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
+        if digest not in uploads:
+            uploads[digest] = dict(upload)
+            added += 1
+    mover.write_json(cache_path, cache)
+    return added
+
+
 def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
     folder = args.folder.resolve()
     listing_path = folder / "listing.json"

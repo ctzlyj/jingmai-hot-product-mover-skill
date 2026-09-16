@@ -43,6 +43,7 @@ from jdo_listing_mvp import (  # noqa: E402
     validate_manifest,
 )
 from jd_product_pipeline import (  # noqa: E402
+    automate_main_video,
     build_video_binding_body,
     effective_rules,
     existing_video_materials,
@@ -361,9 +362,7 @@ class ProductMoverTests(unittest.TestCase):
             ],
             "mainImages": [], "detailImages": [], "video": None,
         }
-        reference = json.loads(
-            (ROOT / "config" / "modern-decorative-painting.reference.json").read_text(encoding="utf-8")
-        )
+        reference = {"category": {"id": 35381}, "componentCatalog": [], "media": {"defaultCategoryId": 1}}
         listing = build_listing(source, ROOT, self.rules, reference, 10000)
         self.assertFalse(listing["product"]["includeSizeSaleAttribute"])
         self.assertEqual(
@@ -517,6 +516,53 @@ class ProductMoverTests(unittest.TestCase):
         self.assertEqual(Decimal("81.52"), jd_price)
         self.assertEqual(Decimal("58.90"), arrival)
         self.assertEqual(Decimal("59.00") - Decimal("0.10"), arrival)
+
+    def test_preflight_supports_target_arrival_multiplier(self):
+        manifest = {
+            "category": {"id": 35381},
+            "source": {
+                "pricing": {
+                    "targetArrivalMultiplier": "2",
+                    "belowCompetitor": "0",
+                    "nationalSubsidyRate": "0.15",
+                    "activityDiscountRate": "0.15",
+                    "coupon": "0",
+                }
+            },
+            "product": {
+                "productKey": "PDD900000000101",
+                "title": "测试励志挂画",
+                "brandId": -1,
+                "sevenDayReturnCode": "1",
+                "freightTemplateId": 1,
+                "mainImageMode": "multi_set",
+            },
+            "skus": [{
+                "skuKey": "900000000101-SKU001",
+                "sourcePrice": "2.64",
+                "jdPrice": "7.31",
+                "stock": 1000,
+                "mountingValueId": "1",
+                "subjectValueId": "1",
+                "styleAlias": "不吃学习的苦",
+                "styleMappingId": "style-1",
+                "styleOrder": 1,
+                "sizeAlias": "20x40cm【无痕钉】",
+                "sizeMappingId": "size-1",
+                "sizeOrder": 1,
+            }],
+            "images": [],
+        }
+        reference = {
+            "category": {"id": 35381},
+            "brands": [{"brandId": -1}],
+            "componentCatalog": [],
+        }
+
+        errors, _ = validate_manifest(Path("listing.json"), manifest, reference)
+
+        self.assertFalse(any("京东价计算不一致" in error for error in errors))
+        self.assertFalse(any("预计到手价" in error for error in errors))
 
     def test_modern_decorative_painting_requires_multi_set_main_images(self):
         manifest = {
@@ -724,6 +770,35 @@ class ProductMoverTests(unittest.TestCase):
         self.assertEqual(1, params["videoType"])
         self.assertNotIn("breakPointFlag", params)
         self.assertNotIn("jdVideoId", params)
+
+    def test_video_binary_upload_rechecks_store_before_transfer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            video_path = folder / "main.mp4"
+            video_path.write_bytes(b"video")
+            source = {
+                "title": "测试商品",
+                "video": {"localPath": video_path.name, "durationSeconds": 10},
+            }
+            with patch("jd_product_pipeline.video_zone_id", return_value="zone-1"), patch(
+                "jd_product_pipeline.jingmai.get",
+                return_value={"data": {"uploadUrl": "https://upload.example", "jdVideoId": 9}},
+            ), patch(
+                "jd_product_pipeline.jingmai.recheck_verified_jdo_store",
+                side_effect=JdoError("店铺身份已变化"),
+            ), patch("jd_product_pipeline.requests.post") as post:
+                with self.assertRaisesRegex(JdoError, "店铺身份"):
+                    automate_main_video(
+                        state_path=folder / "state.json",
+                        state={},
+                        folder=folder,
+                        source=source,
+                        product_id=1,
+                        transcode_attempts=1,
+                        review_attempts=1,
+                        interval=0,
+                    )
+        post.assert_not_called()
 
     def test_video_binding_body_contains_one_sku(self):
         body = build_video_binding_body(

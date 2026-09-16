@@ -264,6 +264,7 @@ def split_source_by_style(source: dict[str, Any], sku_limit: int) -> list[dict[s
 
 def pricing_audit(listing: dict[str, Any]) -> dict[str, Any]:
     pricing = listing["source"]["pricing"]
+    multiplier = Decimal(str(pricing.get("targetArrivalMultiplier") or "1"))
     national = Decimal("1") - Decimal(str(pricing["nationalSubsidyRate"]))
     activity = Decimal("1") - Decimal(str(pricing["activityDiscountRate"]))
     below = Decimal(str(pricing["belowCompetitor"]))
@@ -272,9 +273,9 @@ def pricing_audit(listing: dict[str, Any]) -> dict[str, Any]:
     for sku in listing["skus"]:
         source = Decimal(str(sku["sourcePrice"]))
         jd_price = Decimal(str(sku["jdPrice"]))
-        expected_jd = ((source - below + coupon) / (national * activity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        expected_jd = ((source * multiplier - below + coupon) / (national * activity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         arrival = (jd_price * national * activity - coupon).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        expected_arrival = (source - below).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        expected_arrival = (source * multiplier - below).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         rows.append({
             "sourceSku": sku["sourceSku"], "sourcePrice": str(source), "jdPrice": str(jd_price),
             "expectedJdPrice": str(expected_jd), "arrivalPrice": str(arrival),

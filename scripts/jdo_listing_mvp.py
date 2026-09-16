@@ -620,7 +620,7 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
                 f"{size_suffix(int(sku.get('vendorSizeOrder') or sku.get('sizeOrder') or 0))}"
             )
             vendor_sku = resolved_vendor_sku(manifest, sku)
-            if vendor_sku != expected_vendor_sku:
+            if not str(sku.get("vendorSku") or "").strip() and vendor_sku != expected_vendor_sku:
                 errors.append(f"SKU第{index}行商家编码不符合规则：应为{expected_vendor_sku}，当前{vendor_sku}")
             if vendor_sku in vendor_skus:
                 errors.append(f"商家编码重复：{vendor_sku}")
@@ -663,14 +663,18 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
         if manifest.get("source"):
             try:
                 pricing = (manifest.get("source") or {}).get("pricing") or {}
+                multiplier = Decimal(str(pricing.get("targetArrivalMultiplier") or "1"))
                 below = Decimal(str(pricing.get("belowCompetitor", "0.10")))
                 national_rate = Decimal(str(pricing.get("nationalSubsidyRate", "0.15")))
                 activity_rate = Decimal(str(pricing.get("activityDiscountRate", "0.15")))
                 coupon = Decimal(str(pricing.get("coupon", "0")))
                 source_price = Decimal(str(sku["sourcePrice"]))
                 actual_jd_price = Decimal(str(sku["jdPrice"]))
+                target_arrival = (source_price * multiplier - below).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
                 expected_jd_price = (
-                    (source_price - below + coupon)
+                    (target_arrival + coupon)
                     / ((Decimal("1") - national_rate) * (Decimal("1") - activity_rate))
                 ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 expected_arrival = (
@@ -679,16 +683,13 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
                     * (Decimal("1") - activity_rate)
                     - coupon
                 ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                target_arrival = (source_price - below).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
                 if actual_jd_price != expected_jd_price:
                     errors.append(
                         f"SKU第{index}行京东价计算不一致：应为{expected_jd_price}，当前{actual_jd_price}"
                     )
                 if expected_arrival != target_arrival:
                     errors.append(
-                        f"SKU第{index}行预计到手价不等于同行价减0.10："
+                        f"SKU第{index}行预计到手价不等于定价策略目标："
                         f"预计{expected_arrival}，目标{target_arrival}"
                     )
             except (KeyError, InvalidOperation, TypeError, ValueError):
@@ -1023,10 +1024,17 @@ def write_publish_payloads(input_path: Path, output_dir: Path) -> dict[str, Any]
     }
 
 
+def safe_upload_image_name(name: str) -> str:
+    if weighted_text_length(name) <= 64:
+        return name
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:32]
+    return f"image-{digest}{Path(name).suffix.lower()}"
+
+
 def upload(zone_id: str, category_id: int, path: Path) -> dict[str, Any]:
     body = {
         "imgBase64": base64.b64encode(path.read_bytes()).decode("ascii"),
-        "zoneImageDTO": {"imgName": path.name, "categoryId": category_id},
+        "zoneImageDTO": {"imgName": safe_upload_image_name(path.name), "categoryId": category_id},
     }
     body_path = JDO_RUNTIME.parent / f"upload-{uuid.uuid4().hex}.json"
     body_path.parent.mkdir(parents=True, exist_ok=True)

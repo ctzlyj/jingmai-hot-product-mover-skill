@@ -433,11 +433,12 @@ def infer_scenes(title: str, rules: dict[str, Any]) -> list[dict[str, str]]:
 
 def target_price(source_price: str | Decimal, pricing: dict[str, Any]) -> Decimal:
     source = Decimal(str(source_price))
+    multiplier = Decimal(str(pricing.get("targetArrivalMultiplier") or "1"))
     below = Decimal(str(pricing["belowCompetitor"]))
     coupon = Decimal(str(pricing["coupon"]))
     national = Decimal("1") - Decimal(str(pricing["nationalSubsidyRate"]))
     activity = Decimal("1") - Decimal(str(pricing["activityDiscountRate"]))
-    return ((source - below + coupon) / (national * activity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return ((source * multiplier - below + coupon) / (national * activity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def stable_mapping_id(product_key: str, field: str, value: str) -> str:
@@ -854,11 +855,11 @@ def build_listing(
         listing["skus"].append({
             "skuKey": sku_key,
             "productKey": product_key,
-            "vendorSku": "",
+            "vendorSku": str(item.get("vendorSku") or "").strip(),
             "jdPrice": float(target_price(item["sourcePrice"], rules["pricing"])),
-            "stock": int(defaults["stock"]),
+            "stock": int(item.get("stock", defaults["stock"])),
             "shortTitle": "",
-            "enabled": True,
+            "enabled": bool(item.get("enabled", True)),
             "mountingValueId": str(mounting["valueId"]),
             "mountingLabel": mounting["label"],
             "subjectValueId": str(subject["valueId"]),
@@ -917,20 +918,25 @@ def build_audit_workbook(
     ])
     source_by_sku = {item["sourceSku"]: item for item in source["variants"]}
     embedded_images: set[str] = set()
+    image_buffers: list[io.BytesIO] = []
     last_row = len(listing["skus"]) + 2
     for row_index, sku in enumerate(listing["skus"], start=3):
         source_row = source_by_sku[sku["sourceSku"]]
         sheet.append([
-            "=ROW()-2", "", sku["styleAlias"], sku["sizeAlias"], "", source_row["sourcePrice"], 0.10,
+            "=ROW()-2", "", sku["styleAlias"], sku["sizeAlias"], sku.get("vendorSku") or "", source_row["sourcePrice"], 0.10,
             0.15, 0.15, 0,
             f'=IF(F{row_index}="","",ROUND((F{row_index}-G{row_index}+J{row_index})/((1-H{row_index})*(1-I{row_index})),2))',
             f'=IF(K{row_index}="","",ROUND(K{row_index}*(1-H{row_index})*(1-I{row_index})-J{row_index},2))',
             sku["stock"], sku["mountingLabel"], sku["subjectLabel"], "是", sku["sourceSku"],
             f'=IF(OR(C{row_index}="",D{row_index}="",E{row_index}="",F{row_index}="",G{row_index}="",H{row_index}="",I{row_index}="",J{row_index}="",K{row_index}="",L{row_index}="",M{row_index}="",N{row_index}="",O{row_index}="",P{row_index}=""),"缺少必填",IF(COUNTIF($E$3:$E${last_row},E{row_index})>1,"SKU编码重复","通过"))',
         ])
+        sheet.cell(row_index, 5).number_format = "@"
+        sheet.cell(row_index, 17).number_format = "@"
         image_path = source_row["skuImage"]
         if image_path not in embedded_images:
-            image = ExcelImage(destination.parent / image_path)
+            image_buffer = io.BytesIO((destination.parent / image_path).read_bytes())
+            image_buffers.append(image_buffer)
+            image = ExcelImage(image_buffer)
             image.width = 72
             image.height = 72
             sheet.add_image(image, f"B{row_index}")
@@ -965,6 +971,9 @@ def build_audit_workbook(
     summary.column_dimensions["B"].width = 90
     destination.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(destination)
+    workbook.close()
+    for image_buffer in image_buffers:
+        image_buffer.close()
 
 
 def collect_to_folder(

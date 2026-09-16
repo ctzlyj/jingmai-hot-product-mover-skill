@@ -16,6 +16,9 @@
 - 从 `newColorSize` 获取真实 SKU，并逐 SKU 请求移动商品页价格。
 - 下载主图、SKU 首图、全部详情图、主图视频和视频封面。
 - 生成 `manifest.json`、`listing.json`、审核 Excel 和可恢复状态文件。
+- 读取当前三表商家模板，自动推断商品形态与真实销售维度，原样保留用户商家 SKU，并生成禁止发布的本地草稿。
+- 支持拼多多本地导出、换图 A/B 独立链接及表格补发；逐 SKU 采用当前表商家编码，授权纠码时保持原商品与 SKU ID。
+- 逐项取整的定价核心随仓库分发，不依赖另一个本机 Skill；独立安装回归覆盖补发导入和精确反推。
 - 图片空间上传、发布 Schema 构建、京东合规检测、正式发布。
 - 现代装饰画固定多套主图，每款式“专属首图 + 公共后续图”。
 - 主图视频上传一次、等待转码、选择类目标签、逐 SKU 绑定并等待全部审核通过。
@@ -61,6 +64,11 @@ Copy-Item config\store.example.json config\store.local.json
   --input links.txt `
   --preflight-decisions preflight-decisions.json `
   --publish --confirm PUBLISH_TO_JD
+
+# 5. 三表商家模板只读导入；不登录、不上传、不发布
+.\.venv\Scripts\python.exe scripts\merchant_template_import.py `
+  --input "装饰画搬运上品标准模板.xlsx" `
+  --output-root "outputs\template-import"
 ```
 
 如需指定其他路径，可传 `--store-config`、`--rules`、`--reference` 和 `--output`。
@@ -128,6 +136,10 @@ L = 预计到手价
 - `references/state-machine.md`：状态机、幂等与恢复
 - `references/troubleshooting-and-stop-conditions.md`：故障与停止条件
 - `references/adapting-new-category.md`：新类目适配方法
+- `references/merchant-template-import.md`：商家三表模板字段、推断与停止条件
+- `references/ab-image-testing.md`：独立换图链接、原链接保持与失败恢复
+- `references/merchant-code-repair.md`：当前源表匹配与原链接商家编码纠正
+- `references/component-rounded-pricing.md`：精确反推、独立分发与快照更新
 - `references/new-conversation-prompt.md`：后续优化可直接复制的提示词
 
 ## 测试
