@@ -21,6 +21,8 @@ from typing import Any
 
 from PIL import Image
 
+from source_pricing import component_mode, component_source_audit
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / "config" / "modern-decorative-painting.reference.json"
@@ -41,6 +43,7 @@ PYTHON312_CANDIDATES = tuple(
 )
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 IMAGE_FORMATS = {"JPEG", "PNG", "GIF", "WEBP"}
+MAIN_IMAGE_FORMATS = {"JPEG", "PNG"}
 PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 _ACTIVE_JDO_PROFILE: str | None = None
 _VERIFIED_JDO_STORE: dict[str, Any] | None = None
@@ -256,7 +259,7 @@ def get(skill: str, url: str, params: dict[str, Any] | None = None) -> dict[str,
 
 def verify_configured_store_identity(store_config_path: Path, profile: str) -> dict[str, Any]:
     config = load_json(store_config_path)
-    expected = config.get("store") or {}
+    expected = (config.get("stores") or {}).get(profile) or config.get("store") or {}
     expected_profile = str(expected.get("profile") or "").strip().lower()
     active_profile = configure_jdo_profile(profile)
     if expected_profile != active_profile:
@@ -468,6 +471,8 @@ def validate_image(item: dict[str, Any], path: Path) -> tuple[list[str], list[st
         errors.append(f"图片格式不支持：{path.name} ({image_format})")
     role = item.get("role")
     if role in {"spu_main", "sku_main"}:
+        if image_format not in MAIN_IMAGE_FORMATS:
+            errors.append(f"主图仅支持JPEG或PNG实际编码：{path.name} ({image_format})")
         if width != height:
             errors.append(f"{role} 必须为1:1：{path.name} 当前{width}x{height}")
         if min(width, height) <= 480:
@@ -532,6 +537,13 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
         "sevenDayReturnCode": "无理由退货代码",
         "freightTemplateId": "运费模板ID",
     }
+    freight_component = next(
+        (item for item in reference.get("componentCatalog") or []
+         if item.get("path") == "root" and item.get("componentCode") == "WareTransport"),
+        None,
+    )
+    if freight_component and freight_component.get("required") is False:
+        required_fields.pop("freightTemplateId")
     for field, label in required_fields.items():
         if not present(product.get(field)):
             errors.append(f"商品信息缺少：{label} ({field})")
@@ -547,6 +559,47 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
         and str(product.get("brandId")) not in valid_brand_ids
     ):
         errors.append("品牌ID不在当前店铺可选品牌列表中")
+    raw_components = (reference.get("schema") or {}).get("componentList") or []
+
+    def find_component(components: list[dict[str, Any]], component_code: str) -> dict[str, Any] | None:
+        for component in components:
+            if component.get("componentCode") == component_code:
+                return component
+            nested = find_component(component.get("childrenComponents") or [], component_code)
+            if nested:
+                return nested
+        return None
+
+    logistics_fields = {
+        "packageLengthMm": "WareLength",
+        "packageWidthMm": "WareWide",
+        "packageHeightMm": "WareHeight",
+        "weightKg": "WareWeight",
+    }
+    for field, component_code in logistics_fields.items():
+        if not present(product.get(field)):
+            continue
+        component = find_component(raw_components, component_code) or next(
+            (
+                item for item in reference.get("componentCatalog") or []
+                if item.get("path") == "root" and item.get("componentCode") == component_code
+            ),
+            {},
+        )
+        try:
+            value = Decimal(str(product[field]))
+        except (InvalidOperation, TypeError, ValueError):
+            errors.append(f"{field} 不是有效数字")
+            continue
+        for rule in component.get("validateRule") or []:
+            try:
+                limit = Decimal(str(rule.get("validateRule")))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if rule.get("validateType") == "maximum" and value > limit:
+                errors.append(f"{field} 超过实时Schema上限{limit}")
+            if rule.get("validateType") == "minimum" and value < limit:
+                errors.append(f"{field} 低于实时Schema下限{limit}")
     vendor_sku_prefix = str(product.get("vendorSkuPrefix") or "GZH").strip()
     if not vendor_sku_prefix.isascii() or not vendor_sku_prefix.isalpha() or not vendor_sku_prefix.isupper():
         errors.append("商家编码前缀必须为大写英文字母")
@@ -673,16 +726,22 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
                 target_arrival = (source_price * multiplier - below).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
-                expected_jd_price = (
-                    (target_arrival + coupon)
-                    / ((Decimal("1") - national_rate) * (Decimal("1") - activity_rate))
-                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                expected_arrival = (
-                    actual_jd_price
-                    * (Decimal("1") - national_rate)
-                    * (Decimal("1") - activity_rate)
-                    - coupon
-                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if component_mode(pricing):
+                    price_audit = component_source_audit(source_price, actual_jd_price, pricing)
+                    expected_jd_price = Decimal(price_audit["expectedJdPrice"])
+                    expected_arrival = Decimal(price_audit["arrivalPrice"])
+                    target_arrival = Decimal(price_audit["expectedArrivalPrice"])
+                else:
+                    expected_jd_price = (
+                        (target_arrival + coupon)
+                        / ((Decimal("1") - national_rate) * (Decimal("1") - activity_rate))
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    expected_arrival = (
+                        actual_jd_price
+                        * (Decimal("1") - national_rate)
+                        * (Decimal("1") - activity_rate)
+                        - coupon
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 if actual_jd_price != expected_jd_price:
                     errors.append(
                         f"SKU第{index}行京东价计算不一致：应为{expected_jd_price}，当前{actual_jd_price}"
@@ -896,6 +955,14 @@ def build_publish_schema(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     if str(product.get("itemNumber") or "").strip():
         components.append({"componentCode": "WareItemnum", "value": str(product["itemNumber"]).strip()})
+    for field, component_code in (
+        ("packageLengthMm", "WareLength"),
+        ("packageWidthMm", "WareWide"),
+        ("packageHeightMm", "WareHeight"),
+        ("weightKg", "WareWeight"),
+    ):
+        if present(product.get(field)):
+            components.append({"componentCode": component_code, "value": str(product[field])})
     if detail_images:
         detail_html = "".join(
             f"<p><img style='max-width:790px;' src='{detail_image_url(uploaded_image_url(item))}'/></p>"
@@ -923,7 +990,8 @@ def build_publish_schema(manifest: dict[str, Any]) -> list[dict[str, Any]]:
             properties.append(property_item("units", ",".join(item["unit"])))
         category_values.append({"componentCode": item["componentCode"], "properties": properties})
     components.append({"componentCode": "CategoryGroupList", "value": category_values})
-    components.append({"componentCode": "WareTransport", "value": str(product["freightTemplateId"])})
+    if present(product.get("freightTemplateId")):
+        components.append({"componentCode": "WareTransport", "value": str(product["freightTemplateId"])})
 
     sku_values = []
     for sku in manifest.get("skus") or []:
@@ -1615,6 +1683,30 @@ def command_verify_product(args: argparse.Namespace) -> int:
         "discountExecution": pricing.get("discountExecution"),
         "actualArrivalPriceVerificationRequired": bool(pricing.get("requiresPostPromotionVerification", False)),
     }
+    if component_mode(pricing):
+        formula_rows = []
+        for combination in sorted(set(expected) & set(actual_by_combination)):
+            expected_sku = expected[combination]
+            actual_sku = actual_by_combination[combination]
+            try:
+                check = component_source_audit(
+                    expected_sku["sourcePrice"],
+                    (actual_sku.get("priceInfo") or {}).get("jdPrice"), pricing,
+                )
+            except (KeyError, InvalidOperation, TypeError, ValueError) as error:
+                check = {"ok": False, "error": str(error)}
+            formula_rows.append({"skuId": actual_sku.get("skuId"), "combination": combination, **check})
+        formula_ok = (
+            bool(formula_rows) and len(formula_rows) == len(expected) == len(actual_skus)
+            and all(row["ok"] for row in formula_rows)
+        )
+        pricing_formula_audit.update({
+            "status": "verified" if formula_ok else "failed",
+            "scope": "独立读取京东价后逐SKU复算约定到手价",
+            "roundingMode": "component", "modeledArrivalOnly": True, "rows": formula_rows,
+        })
+        if not formula_ok:
+            errors.append("独立回读的逐SKU到手价未全部符合逐项取整定价策略")
     if any(
         str(sku.get("styleAlias") or "") != normalized_sale_alias(str(sku.get("styleAlias") or ""))
         for sku in manifest.get("skus") or []

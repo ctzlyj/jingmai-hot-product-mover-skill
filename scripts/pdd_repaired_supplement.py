@@ -4,7 +4,6 @@ import argparse
 import contextlib
 import io
 import json
-import os
 import time
 from decimal import Decimal
 from functools import lru_cache
@@ -14,6 +13,7 @@ from types import SimpleNamespace
 import jd_product_mover as mover
 import jd_product_pipeline as pipeline
 import jdo_listing_mvp as jingmai
+import deferred_publish_batch as batch
 from pdd_ab_image_publish import digest_json, file_hash, require_confirmation
 from pdd_local_export_mvp import harmonize_sku_main_images, parse_export_folder
 from publish_local_draft import reuse_shared_uploaded_images, update_shared_uploaded_images
@@ -214,7 +214,7 @@ def verify(folder, product_id):
             raise ValueError(f"京东申请驳回：{rejection}")
         time.sleep(5)
     else:
-        raise ValueError(f"商品{product_id}待回查完成，不重复创建")
+        raise batch.VerificationPending(f"商品{product_id}待回查完成，不重复创建")
     detail = jingmai.get("jdo-product-status", "/rest/sp-product/v0/products/{productId}",
                          {"productId": product_id, "scene": "pop"}).get("data") or {}
     plan = mover.read_json(folder / "plan.json")
@@ -248,7 +248,7 @@ def verify(folder, product_id):
     return result
 
 
-def publish_one(folder, args):
+def publish_one(folder, args, *, defer_verification=False):
     plan = mover.read_json(folder / "plan.json")
     require_confirmation(args.confirm, mover.read_json(folder / "dry-run.json")["confirmToken"], plan)
     if plan["contentReview"]["decision"] != "PASS":
@@ -260,9 +260,11 @@ def publish_one(folder, args):
             raise ValueError(f"源文件在确认后变化：{path}")
     store = pipeline.verify_store_identity(mover.read_json(args.store_config), args.profile)
     if store != plan["store"]:
-        raise ValueError("确认店铺不一致")
+        raise batch.BatchStopError("确认店铺不一致")
     state_path = folder / "state.json"
     state = mover.read_json(state_path) if state_path.is_file() else {}
+    if defer_verification and state.get("stage") != "PRODUCT_APPLY_REJECTED" and (state.get("productId") or state.get("applyId") or state.get("stage") == "SUBMITTING"):
+        return batch.submitted_result(state)
     require_resumable_state(state)
     product_id = int(state.get("productId") or 0)
     if not product_id:
@@ -291,64 +293,30 @@ def publish_one(folder, args):
         pipeline.save_state(state_path, "SUBMITTING", confirmToken=digest_json(plan), payloadSha256=file_hash(body))
         response = jingmai.run_jdo_large(url="/rest/sp-product/v0/product-applies", method="POST", body_path=body,
                                         skill_id="jdo-product-publish", yes=True)
-        mover.write_json(folder / "publish/response.json", response)
-        product_id = int((response.get("data") or {}).get("productId") or 0)
-        if not product_id:
-            raise ValueError("提交响应未返回ID，保留状态，不重复创建")
-        pipeline.save_state(state_path, "PUBLISHED", productId=product_id)
+        product_id = batch.record_response(folder, response)
         print(json.dumps({"stage": "PUBLISHED", "sourceSku": plan["sourceSku"], "productId": product_id}), flush=True)
+    if defer_verification:
+        return batch.submitted_result(batch.read_state(folder))
     return verify(folder, product_id)
 
 
 def finalize_progress(progress):
-    progress["succeeded"] = sum(item["ok"] for item in progress["results"])
-    progress["failed"] = sum(not item["ok"] for item in progress["results"])
-    progress["pending"] = progress["requested"] - len(progress["results"])
-    progress["stage"] = "PARTIAL" if progress["pending"] else ("COMPLETED_WITH_FAILURES" if progress["failed"] else "VERIFIED")
+    batch.finalize_progress(progress)
 
 
-def publish(args):
-    if args.confirm != "PUBLISH_TO_JD":
+def publish(args, *, audit_only=False):
+    if not audit_only and args.confirm != "PUBLISH_TO_JD":
         raise ValueError("缺少明确发布确认")
     prepared = mover.read_json(args.output / "prepared.json")
     rows = sorted(prepared["results"], key=lambda row: (not row["ok"], row.get("skuCount", 0), row["sourceSku"]))
-    valid = [row for row in rows if row["ok"]]
-    if args.limit:
-        valid = valid[:args.limit]
-    progress = {"startedAt": mover.now_iso(), "requested": len(rows), "stage": "RUNNING",
-                "results": [row for row in rows if not row["ok"]]}
-    lock = args.output / ".publish.lock"
-    handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    os.close(handle)
-    try:
-        for row in valid:
-            folder = args.output / "products" / row["sourceSku"]
-            try:
-                result = publish_one(folder, args)
-            except Exception as error:
-                pipeline.verify_store_identity(mover.read_json(args.store_config), args.profile)
-                state = mover.read_json(folder / "state.json") if (folder / "state.json").is_file() else {}
-                result = {"ok": False, "sourceSku": row["sourceSku"], "productId": state.get("productId"),
-                          "stage": state.get("stage", "BEFORE_SUBMISSION"), "error": str(error)}
-                mover.write_json(folder / "failure.json", result)
-            progress["results"].append(result)
-            progress["succeeded"] = sum(item["ok"] for item in progress["results"])
-            progress["failed"] = sum(not item["ok"] for item in progress["results"])
-            mover.write_json(args.output / "progress.json", progress)
-            print(json.dumps(result, ensure_ascii=False), flush=True)
-        finalize_progress(progress)
-        progress["finishedAt"] = mover.now_iso()
-    except Exception as error:
-        progress.update(stage="STOPPED", error=str(error))
-        raise
-    finally:
-        mover.write_json(args.output / "progress.json", progress)
-        lock.unlink(missing_ok=True)
+    return batch.run_batch(args, rows, "products", ".publish.lock",
+                           lambda folder: publish_one(folder, args, defer_verification=True),
+                           verify, audit_only=audit_only)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["prepare", "seal", "publish"])
+    parser.add_argument("command", choices=["prepare", "seal", "publish", "verify"])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--preflight", type=Path)
     parser.add_argument("--inventory", type=Path)
@@ -358,10 +326,13 @@ def main():
     parser.add_argument("--rules", type=Path, default=ROOT / "config/modern-decorative-painting.rules.json")
     parser.add_argument("--compliance-reviews", type=Path, nargs="*", default=[])
     parser.add_argument("--confirm", default="")
-    parser.add_argument("--limit", type=int)
+    parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
     args.output = args.output.resolve()
-    {"prepare": prepare, "seal": seal, "publish": publish}[args.command](args)
+    if args.command in {"publish", "verify"}:
+        publish(args, audit_only=args.command == "verify")
+    else:
+        {"prepare": prepare, "seal": seal}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ import contextlib
 import hashlib
 import json
 import io
-import os
 import re
 import time
 from pathlib import Path
@@ -15,6 +14,7 @@ from types import SimpleNamespace
 import jd_product_mover as mover
 import jd_product_pipeline as pipeline
 import jdo_listing_mvp as jingmai
+import deferred_publish_batch as batch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -213,7 +213,7 @@ def verify_pair(folder, product_id, args):
                 raise ValueError(f"B application rejected; preserved ID {product_id}: {rejection}")
         time.sleep(5)
     else:
-        raise ValueError(f"B product {product_id} verification pending; do not recreate")
+        raise batch.VerificationPending(f"B product {product_id} verification pending; do not recreate")
     current = get_detail(plan["originalProductId"])
     new_detail = get_detail(product_id)
     if original_fingerprint(current) != plan["originalFingerprint"]:
@@ -246,7 +246,7 @@ def verify_pair(folder, product_id, args):
     return result
 
 
-def publish_pair(folder, args):
+def publish_pair(folder, args, *, defer_verification=False):
     plan = mover.read_json(folder / "plan.json")
     token = mover.read_json(folder / "dry-run.json")["confirmToken"]
     require_confirmation(args.confirm, token, plan)
@@ -257,13 +257,17 @@ def publish_pair(folder, args):
             raise ValueError(f"Asset changed after dry-run: {name}")
     store = pipeline.verify_store_identity(mover.read_json(args.store_config), args.profile)
     if store != plan["store"]:
-        raise ValueError("Confirmed store changed")
+        raise batch.BatchStopError("Confirmed store changed")
     current = get_detail(plan["originalProductId"])
     if original_fingerprint(current) != plan["originalFingerprint"]:
         raise ValueError("A changed since preparation; cannot copy stale controls")
     state_path = folder / "state.json"
     state = mover.read_json(state_path) if state_path.is_file() else {}
+    if state.get("stage") == "PRODUCT_APPLY_REJECTED":
+        raise ValueError("Previously rejected B application retained; do not recreate")
     product_id = int(state.get("productId") or 0)
+    if defer_verification and (product_id or state.get("applyId") or state.get("stage") == "SUBMITTING"):
+        return batch.submitted_result(state)
     if not product_id:
         existing = pipeline.find_existing_product(plan["itemNumber"])
         if existing:
@@ -298,63 +302,28 @@ def publish_pair(folder, args):
                             confirmToken=token, payloadSha256=file_hash(body), submittedAt=mover.now_iso())
         response = jingmai.run_jdo_large(url="/rest/sp-product/v0/product-applies", method="POST", body_path=body,
                                         skill_id="jdo-product-publish", yes=True)
-        mover.write_json(folder / "publish/response.json", response)
-        product_id = int((response.get("data") or {}).get("productId") or 0)
-        if not product_id:
-            raise ValueError("Submission response missing product ID; do not auto-retry")
-        pipeline.save_state(state_path, "PUBLISHED", productId=product_id)
+        product_id = batch.record_response(folder, response)
         print(json.dumps({"stage": "PUBLISHED", "sourceSku": plan["sourceSku"], "productId": product_id}), flush=True)
+    if defer_verification:
+        return batch.submitted_result(batch.read_state(folder))
     result = verify_pair(folder, product_id, args)
     pipeline.save_state(state_path, "VERIFIED", **{key: value for key, value in result.items() if key != "ok"})
     return result
 
 
-def run(args):
-    if args.confirm != "PUBLISH_TO_JD":
+def run(args, *, audit_only=False):
+    if not audit_only and args.confirm != "PUBLISH_TO_JD":
         raise ValueError("Explicit publication confirmation required")
     prepared = mover.read_json(args.output / "prepared.json")
-    pairs = prepared["pairs"][:args.limit] if args.limit else prepared["pairs"]
-    lock = args.output / ".ab-publish.lock"
-    handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    os.close(handle)
-    progress = {"stage": "RUNNING", "results": [], "startedAt": mover.now_iso()}
-    try:
-        for plan in pairs:
-            folder = args.output / "pairs" / plan["sourceSku"]
-            try:
-                state_path = folder / "state.json"
-                state = mover.read_json(state_path) if state_path.is_file() else {}
-                if args.skip_failures and state.get("stage") == "PRODUCT_APPLY_REJECTED":
-                    raise ValueError(f"Previously rejected B application retained: {state.get('productId')}; {state.get('productApply')}")
-                result = publish_pair(folder, args)
-            except Exception as error:
-                if not args.skip_failures:
-                    raise
-                pipeline.verify_store_identity(mover.read_json(args.store_config), args.profile)
-                state = mover.read_json(state_path) if state_path.is_file() else {}
-                result = {"ok": False, "skipped": True, "sourceSku": plan["sourceSku"],
-                          "originalProductId": plan["originalProductId"], "productId": state.get("productId"),
-                          "stage": state.get("stage", "FAILED_BEFORE_SUBMISSION"), "error": str(error),
-                          "checkedAt": mover.now_iso()}
-                mover.write_json(folder / "failure.json", result)
-            progress["results"].append({"sourceSku": plan["sourceSku"], **result})
-            progress["succeeded"] = sum(bool(row.get("ok")) for row in progress["results"])
-            progress["failed"] = len(progress["results"]) - progress["succeeded"]
-            mover.write_json(args.output / "progress.json", progress)
-            print(json.dumps({"completed": len(progress["results"]), "total": len(pairs), **result}), flush=True)
-        progress["stage"] = "COMPLETED_WITH_FAILURES" if progress.get("failed") else "VERIFIED"
-        progress["finishedAt"] = mover.now_iso()
-    except Exception as error:
-        progress.update(stage="STOPPED", error=str(error))
-        raise
-    finally:
-        mover.write_json(args.output / "progress.json", progress)
-        lock.unlink(missing_ok=True)
+    return batch.run_batch(args, prepared["pairs"], "pairs", ".ab-publish.lock",
+                           lambda folder: publish_pair(folder, args, defer_verification=True),
+                           lambda folder, product_id: verify_pair(folder, product_id, args),
+                           skip_failures=args.skip_failures, audit_only=audit_only)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["prepare", "publish"])
+    parser.add_argument("command", choices=["prepare", "publish", "verify"])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--preflight", type=Path)
     parser.add_argument("--inventory", type=Path)
@@ -369,7 +338,7 @@ def main():
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
     args.output = args.output.resolve()
-    prepare(args) if args.command == "prepare" else run(args)
+    prepare(args) if args.command == "prepare" else run(args, audit_only=args.command == "verify")
 
 
 if __name__ == "__main__":

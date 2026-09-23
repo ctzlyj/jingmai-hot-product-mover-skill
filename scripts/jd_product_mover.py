@@ -9,13 +9,9 @@ import hashlib
 import html as html_module
 import io
 import json
-import os
 import re
-import shutil
-import subprocess
 import sys
 import time
-import uuid
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -26,6 +22,8 @@ import requests
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from PIL import Image
+
+from source_pricing import component_mode, component_source_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +36,10 @@ USER_AGENT = (
 
 
 class MoverError(RuntimeError):
+    pass
+
+
+class SourceAccessDenied(MoverError):
     pass
 
 
@@ -123,6 +125,8 @@ def parse_video_response(payload: str) -> dict[str, Any]:
         raise MoverError("视频播放地址接口返回格式异常")
     response = json.loads(match.group(1))
     if int(response.get("errcode") or 0) != 0:
+        if int(response.get("errcode") or 0) in {401, 403} or re.search(r"login|unauthorized|forbidden|captcha|登录|鉴权|权限|验证码|滑块", str(response.get("errmsg") or ""), re.I):
+            raise SourceAccessDenied("来源视频要求登录、权限或安全验证，停止切换工具")
         raise MoverError(f"视频播放地址查询失败：{response.get('errmsg')}")
     result = response.get("result") or {}
     variants = result.get("data") or []
@@ -161,56 +165,12 @@ def fetch_video_info(client: "HttpClient", video_id: str) -> dict[str, Any]:
 
 
 def fetch_video_info_with_browser(product_url: str, video_id: str) -> dict[str, Any]:
-    npx = shutil.which("npx.cmd") or shutil.which("npx")
-    if not npx:
-        raise MoverError("视频接口受限，且未找到 npx/agent-browser 浏览器回退能力")
-    session_name = f"jd-video-{video_id}-{uuid.uuid4().hex[:8]}"
-    environment = {**os.environ, "AGENT_BROWSER_SESSION": session_name}
-
-    def run(
-        *arguments: str, timeout: int = 90, capture: bool = False,
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [npx, "--yes", "agent-browser", *arguments],
-            check=True,
-            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-            stderr=subprocess.PIPE if capture else subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            env=environment,
-            timeout=timeout,
-        )
-
+    from browser_source_read import BrowserReadError, read_jd_video
     try:
-        run("open", product_url)
-        run("wait", "5000")
-        expression = (
-            "(async()=>{const u=performance.getEntriesByType('resource').map(x=>x.name)"
-            ".find(x=>x.includes('image/getPlayUrl'));if(!u)return {text:''};"
-            "return {text:await fetch(u).then(r=>r.text())};})()"
-        )
-        result = run("eval", expression, "--json", capture=True)
-        response = None
-        for line in reversed(result.stdout.splitlines()):
-            try:
-                candidate = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict) and candidate.get("success"):
-                response = candidate
-                break
-        payload = str((((response or {}).get("data") or {}).get("result") or {}).get("text") or "")
-        video = parse_video_response(payload)
-        return {"sourceVideoId": video_id, "resolutionMethod": "browser", **video}
-    except (OSError, subprocess.SubprocessError, MoverError, json.JSONDecodeError) as exc:
+        video = parse_video_response(read_jd_video(product_url, video_id))
+        return {"sourceVideoId": video_id, "resolutionMethod": "browser-playwright", **video}
+    except (BrowserReadError, MoverError, json.JSONDecodeError) as exc:
         raise MoverError(f"浏览器解析视频地址失败：{exc}") from exc
-    finally:
-        subprocess.run(
-            [npx, "--yes", "agent-browser", "close"],
-            capture_output=True,
-            env=environment,
-            timeout=30,
-        )
 
 
 def parse_detail_urls(payload: str) -> list[str]:
@@ -428,10 +388,12 @@ def infer_scenes(title: str, rules: dict[str, Any]) -> list[dict[str, str]]:
             result.append({"valueId": str(rule["valueId"]), "label": str(rule["label"])})
         if len(result) == 3:
             break
-    return result or [{"valueId": str(item["valueId"]), "label": str(item["label"])} for item in rules["defaultScenes"]]
+    return result or [{"valueId": str(item["valueId"]), "label": str(item["label"])} for item in rules.get("defaultScenes") or []]
 
 
 def target_price(source_price: str | Decimal, pricing: dict[str, Any]) -> Decimal:
+    if component_mode(pricing):
+        return component_source_plan(source_price, pricing).jd_price
     source = Decimal(str(source_price))
     multiplier = Decimal(str(pricing.get("targetArrivalMultiplier") or "1"))
     below = Decimal(str(pricing["belowCompetitor"]))
@@ -460,6 +422,8 @@ class HttpClient:
                 response.raise_for_status()
                 return response.content
             except requests.RequestException as exc:
+                if exc.response is not None and exc.response.status_code in {401, 403}:
+                    raise SourceAccessDenied("来源接口要求登录或权限，停止重试和浏览器回退") from exc
                 last_error = exc
                 if attempt + 1 < self.retries:
                     time.sleep(2 ** attempt)
@@ -582,6 +546,8 @@ def collect_source(url: str, client: HttpClient, max_workers: int = 8) -> dict[s
     if video_id:
         try:
             video = {"resolutionMethod": "api", **fetch_video_info(client, video_id)}
+        except SourceAccessDenied:
+            raise
         except MoverError:
             video = fetch_video_info_with_browser(
                 f"https://item.m.jd.com/product/{input_sku}.html",
@@ -707,7 +673,15 @@ def build_listing(
     reference: dict[str, Any], style_start: int,
 ) -> dict[str, Any]:
     expected_category = expected_source_category_id(rules)
-    if not source.get("categoryIds") or int(source["categoryIds"][-1]) != expected_category:
+    review = source.get("categoryReview") or {}
+    reviewed_mapping = (
+        source.get("sourcePlatform") == "taobao" and review.get("decision") == "PROCEED"
+        and bool(str(review.get("reason") or "").strip())
+        and str(review.get("sourceItemId") or "") == str(source.get("sourceParentSku") or source["sourceSku"])
+        and int(review.get("targetCategoryId") or 0) == int(rules["category"]["id"])
+        and int((reference.get("category") or {}).get("id") or 0) == int(rules["category"]["id"])
+    )
+    if not reviewed_mapping and (not source.get("categoryIds") or int(source["categoryIds"][-1]) != expected_category):
         raise MoverError(f"源商品类目与规则不一致，预期来源类目{expected_category}：{source.get('categoryIds')}")
     product_key = f"{str(source.get('productKeyPrefix') or 'JD').upper()}-{source['sourceSpu']}"
     source_title = source["title"]
@@ -718,6 +692,8 @@ def build_listing(
     subject = infer_subject(source_title, rules) if sku_rules.get("subject") else {"valueId": "", "label": ""}
     mounting = (sku_rules.get("mounting") or {}).get("default") or {"valueId": "", "label": ""}
     sale_names = list(source.get("saleProperties", {}).values())
+    if len(sale_names) > 2:
+        raise MoverError("当前发布模型最多表达两个销售维度，不能合并或丢弃源属性")
     has_style_dimension = len(sale_names) >= 2 and sale_names[0] not in {"尺寸", "规格"}
     fallback_style = infer_style_alias(source_title)
     component_catalog = reference.get("componentCatalog") or []
@@ -813,12 +789,12 @@ def build_listing(
             "title": title,
             "brandId": defaults["brandId"],
             "brandName": defaults["brandName"],
-            "model": "",
+            "model": str(defaults.get("model") or ""),
             "itemNumber": source["sourceSpu"],
-            "packageLengthMm": "",
-            "packageWidthMm": "",
-            "packageHeightMm": "",
-            "weightKg": "",
+            "packageLengthMm": defaults.get("packageLengthMm", ""),
+            "packageWidthMm": defaults.get("packageWidthMm", ""),
+            "packageHeightMm": defaults.get("packageHeightMm", ""),
+            "weightKg": defaults.get("weightKg", ""),
             "sevenDayReturnCode": defaults["sevenDayReturnCode"],
             "sevenDayReturnLabel": defaults["sevenDayReturnLabel"],
             "saleUnit": "",

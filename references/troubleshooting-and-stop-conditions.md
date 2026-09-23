@@ -42,6 +42,14 @@ Windows 管道模式下必须同时给 `jdo-cli` 子进程设置 `PYTHONUTF8=1` 
 
 用户明确改变目标类目或 AI 判重结论后，可复用原源 SKU 状态恢复。进入任何非 `SKIPPED_*` 阶段时清除顶层旧 `categoryDecision`、`preflightDecision` 和 `duplicateReview`；历史阶段仍保留在 `history`。验证最终状态不再同时出现 `VERIFIED`/`PUBLISHED` 与过期跳过原因。
 
+### 缺失资料、运费模板与合规检测边界
+
+实时模板明确标为非必填的字段，资料缺失时省略组件，不填空字符串或伪造默认值。`WareTransport` 可省略时，本地预检不再强制要求运费模板；已有模板ID仍原样保留，省略后平台落为0不等于已证明包邮。模板缺失或仍要求必填时保留预检错误。
+
+商品包装长宽高与毛重从清单的 `packageLengthMm/packageWidthMm/packageHeightMm/weightKg` 传入 `WareLength/WareWide/WareHeight/WareWeight`。旧生成器虽保存了这些值，却没有提交组件，导致正式发品报告重量或长度必填。缺值不自动生成数值；来源事实和用户授权的估算应分别记录，估算不能标为实测，不能编造认证或授权。
+
+`product-schemas/validations` 返回 `success=true,data={}` 仅说明该合规检测通过，不证明发品必填字段齐全。正式提交仍可能返回材质、重量、长度等必填错误；`controlledWithFreight=true` 也不能单独证明包装字段可省略。参数明确驳回后，先核对申请列表、商品列表和原回执，再修正，不能把检测通过记成上架成功。
+
 ### 大请求体无法启动 CLI
 
 Windows 命令行长度有限。不要把大型 Schema 或 Base64 直接放入 `--body` 参数；使用 `jdo_large_body_bridge.py` 从 UTF-8 文件读取，并继续复用原版 `jdo-cli` 的凭据与签名逻辑。
@@ -73,6 +81,14 @@ Windows 命令行长度有限。不要把大型 Schema 或 Base64 直接放入 `
 ### 商品列表 SKU 不完整或顺序变化
 
 商品列表只用于定位商品。最终审计必须使用详情接口的完整 `skuList`，不能依赖列表页的 SKU 分页或排序。
+
+### 按技术货号查无结果却报分页缺失
+
+京麦商品列表在精确货号零命中时可能返回 `success=true`、`data=null`、`paginationData.totalItems=0`，但省略 `currentPage`。只有这组条件同时满足时可确认结果为空；非零结果或总数缺失时仍必须要求完整页码元数据。不得因为这个兼容分支跳过远端查重，也不得把其他分页异常当作零结果。
+
+### 图片扩展名与实际编码不一致
+
+淘宝素材可能文件名为 `.jpg`，实际内容却是 WebP。主图上传前必须用图片解码器读取真实格式；实际编码不是 JPEG/PNG 时生成新的 JPEG/PNG 合规副本，并重新检查方图、像素和 3MB 限制。禁止仅修改扩展名后上传，原图仍保留作审计证据。
 
 ### 淘宝宽高尺寸被错误压成单边长度
 

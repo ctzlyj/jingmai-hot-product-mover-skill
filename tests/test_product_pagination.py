@@ -46,6 +46,11 @@ class ProductPaginationTests(unittest.TestCase):
         with patch.object(pipeline.jingmai, "get", return_value=response([], 0)):
             self.assertEqual(pipeline.list_products(), [])
 
+    def test_confirmed_empty_result_without_current_page_is_valid(self):
+        empty = {"success": True, "data": None, "paginationData": {"totalItems": 0}}
+        with patch.object(pipeline.jingmai, "get", return_value=empty):
+            self.assertEqual(pipeline.list_products(item_num="TB123"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

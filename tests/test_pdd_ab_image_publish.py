@@ -111,12 +111,18 @@ class AbImagePublishTests(unittest.TestCase):
             root = Path(temporary)
             plans = [{"sourceSku": "one", "originalProductId": 1}, {"sourceSku": "two", "originalProductId": 2}]
             ab.mover.write_json(root / "prepared.json", {"pairs": plans})
-            ab.mover.write_json(root / "pairs/one/state.json", {"stage": "SUBMITTING", "productId": 789})
+            ab.mover.write_json(root / "pairs/one/state.json", {"stage": "PRODUCT_APPLY_REJECTED", "productId": 789})
             args = SimpleNamespace(confirm="PUBLISH_TO_JD", output=root, limit=0, skip_failures=True,
                                    store_config=root / "store.json", profile="test")
             ab.mover.write_json(args.store_config, {})
-            with patch.object(ab, "publish_pair", side_effect=[ValueError("item rejected"), {"ok": True, "productId": 790}]), patch.object(ab.pipeline, "verify_store_identity"):
+            ab.mover.write_json(root / "pairs/two/plan.json", {"store": {}, "originalProductId": 2})
+            def submit(folder, args, *, defer_verification=False):
+                self.assertTrue(defer_verification)
+                ab.pipeline.save_state(folder / "state.json", "PUBLISHED", productId=790)
+                return {"ok": False, "pending": True, "productId": 790}
+            with patch.object(ab, "publish_pair", side_effect=submit) as publisher, patch.object(ab.pipeline, "verify_store_identity", return_value={}), patch.object(ab, "verify_pair", return_value={"ok": True, "productId": 790}):
                 ab.run(args)
+                publisher.assert_called_once()
             progress = ab.mover.read_json(root / "progress.json")
             self.assertEqual(progress["stage"], "COMPLETED_WITH_FAILURES")
             self.assertEqual(len(progress["results"]), 2)
@@ -124,7 +130,7 @@ class AbImagePublishTests(unittest.TestCase):
             self.assertTrue(progress["results"][1]["ok"])
             state = ab.mover.read_json(root / "pairs/one/state.json")
             self.assertEqual(state["productId"], 789)
-            self.assertEqual(state["stage"], "SUBMITTING")
+            self.assertEqual(state["stage"], "PRODUCT_APPLY_REJECTED")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@
 - 已安装并完成 OAuth 登录的 `jdo-cli`。
 - Python 包见根目录 `requirements.txt`。
 - 严格逐项取整定价使用仓库内冻结的纯函数快照，无需另装比价 Skill；验证及升级规则见 `component-rounded-pricing.md`。
-- 可选：`agent-browser`，仅在公开视频地址接口受限时用于浏览器回退。
+- 可选：已安装 `browser-task-router` 及其 Playwright CLI，仅在公开源视频确需浏览器补采时使用。调用用户级路由器，不临时安装远端包，也不继承工作浏览器登录；缺少时由助手依据路由器指南选择可用的授权只读能力。普通HTTP采集及京麦发布不依赖该浏览器组件。
 
 ## 安装依赖
 
@@ -81,7 +81,7 @@ Copy-Item config\store.example.json config\store.local.json
 将仓库目录放入：
 
 ```text
-%USERPROFILE%\.codex\skills\jd-jingmai-hot-product-mover
+%USERPROFILE%\.joycode\skills\jd-jingmai-hot-product-mover
 ```
 
 也可使用 Codex 的 Skill 安装能力从 GitHub 仓库安装。安装后重新打开任务或让 Codex 重新扫描 Skills。

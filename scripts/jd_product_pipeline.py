@@ -272,9 +272,13 @@ def list_products(category_id: int | None = None, item_num: str | None = None) -
         response = jingmai.get("jdo-product-status", "/rest/sp-product/v0/products", params)
         batch = response.get("data") or []
         pagination = response.get("paginationData") or {}
-        if "totalItems" not in pagination or "currentPage" not in pagination:
+        if "totalItems" not in pagination:
             raise PipelineError("商品列表缺少分页元数据，不能确认全量")
         total = int(pagination["totalItems"])
+        if total == 0 and not batch:
+            return []
+        if "currentPage" not in pagination:
+            raise PipelineError("商品列表缺少页码元数据，不能确认全量")
         if expected_total is None:
             expected_total = total
         if total < 0 or total != expected_total or int(pagination["currentPage"]) != page:
