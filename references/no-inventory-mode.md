@@ -137,7 +137,7 @@ API Key 一律走 DPAPI 凭据（`%LOCALAPPDATA%\JoyCode\credentials\` 下 `oxyg
 ### 线上补丁规则（实测）
 
 - 先 dry-run 再 apply；`PATCH_SUBMITTED` 后必须独立回读确认 `ALREADY_CURRENT`，PATCH 成功不等于生效。
-- 主图数量变化必须显式 `--allow-count-change`。
+- 主图 `WareSkuImg` PATCH 是按槽位覆盖合并：提交比线上更少的 value 不会删除尾部图，尾部槽保留原图（本批 2 件实测复现：违规图残留尾部槽位）。删除主图的可靠替代是用同组干净图顶替该槽位、保持数量不变；真删除接口未验证，列为待办。`update_main_images.py --allow-count-change` 仅放行数量差异提交，不解决平台槽位合并，勿依赖其完成删除。
 - SKU 线上图源取 `candidates/<item>/normalized/`（不是 compliant）。
 - 详情全量刷新走 `refresh_detail_full.py`。
 - 用户自行下架的商品只备素材，不代为上架。
