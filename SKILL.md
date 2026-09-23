@@ -24,7 +24,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 - 无货源模式批次（表格含全部素材）使用 `scripts/ni/` 通用脚本：`build_candidates.py` 审计构建 → 生图池 `oxygen_pool.py`/`sufy_fallback.py`（人物一律“移除人物+背景自然补全”）→ `oxygen_verify.py` 任务感知验收 → `listing_batch.py prepare/validate/publish/verify` 两阶段发布 → `bind_videos.py` 照搬原视频幂等绑定 → `batch_remote_audit.py` 整批回查。批次根目录用 `--root` 指定，配置全部来自 `batch-config.json`；SPU/货号/商家SKU 随机编码写入 ledger 后必须复用，写结果不明先 reconcile。
 - 无货源模式价格必须走 `scripts/source_pricing.py` 的 `component_source_plan`，定价配置固定为 `{targetArrivalMultiplier:1.35, belowCompetitor:0, nationalSubsidyRate:0, activityDiscountRate:0.15, coupon:0, roundingMode:component}`；默认库存 200，七天退货代码 "1"。
-- 无货源模式改图一律生图模型（Oxygen-Product-Pro → Oxygen-Imagen → sufy-image2，内部网关并发 2-3，失败转 sufy，重试≤2轮），禁止本地 PS 掩码；品牌信息图/价格说明图/淘金币图/公司介绍页/源头工厂图直接删除；商品本体不得变形、重构图不留空白空洞；验收用 LTS4AI gemini-2.5-flash 双图对比、任务感知口径。
+- 无货源模式改图一律生图模型（Oxygen-Product-Pro → Oxygen-Imagen → sufy-image2，内部网关并发 2-3，失败转 sufy，重试≤2轮），禁止本地 PS 掩码；品牌信息图/价格说明图/淘金币图/公司介绍页/源头工厂图直接删除；商品本体不得变形、重构图不留空白空洞；验收用 LTS4AI 双档复核：`gemini-2.5-flash-lite` 双图对比全量初筛（任务感知口径），疑似不合格/解析失败项以 `gemini-2.5-flash` 复核为准。
 - 无货源模式视频直接照搬原链接视频不扫描，用 `jd_product_pipeline.automate_main_video` 幂等绑定并逐 SKU 回查；线上补丁先 dry-run 再 apply，PATCH 后必须独立回读确认 `ALREADY_CURRENT`，主图数量变化用 `--allow-count-change`，SKU 线上图源在 `candidates/<item>/normalized/`。
 - 全店盘点、查重或发布后审计读取商品列表时，使用 `scripts/jd_product_pipeline.py:list_products` 的稳定排序和分页完整性检查；最终 SKU 必须来自逐商品详情。适用条件、失败回归和非破坏式更新见 `references/product-pagination.md`。
 - 京东公开源视频优先原HTTP接口；确需浏览器补采时调用已安装路由器的 Playwright CLI，无界面独立会话按目标视频ID等待响应，不临时 `npx` 下载、固定休眠或借用工作标签。登录/验证拦截和清理结果不明不换工具盲试；见 `references/browser-source-routing.md`。

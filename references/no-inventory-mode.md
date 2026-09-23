@@ -118,7 +118,7 @@
 | Oxygen-Imagen | 最多 8 参考图、高保真编辑 | ~68% | 同上网关，人物类任务更适合 |
 | sufy-image2 | 高并发兜底主力 | ~93% | 生图任务效率优先，全兜底 |
 
-验收：LTS4AI `gemini-2.5-flash` 双图对比（原图 vs 修改图），任务感知口径（人物任务允许构图变化；损伤修复任务允许修字；移除模式按移除口径判）。PASS 优先级 pro > imagen > sufy。
+验收：LTS4AI 双档复核——`gemini-2.5-flash-lite` 双图对比（原图 vs 修改图）全量初筛，任务感知口径（人物任务允许构图变化；损伤修复任务允许修字；移除模式按移除口径判）；疑似不合格或解析失败的图以 `gemini-2.5-flash` 复核为准。PASS 优先级 pro > imagen > sufy。
 
 API Key 一律走 DPAPI 凭据（`%LOCALAPPDATA%\JoyCode\credentials\` 下 `oxygen-product-pro.dpapi`、`sufy-image2.dpapi`），密钥绝不进源码、日志、文档或回复；Key 失效找用户要新的并立即换 DPAPI 存储。
 

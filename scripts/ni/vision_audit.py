@@ -10,6 +10,17 @@ import batch as ni_batch  # noqa: E402
 
 ROOT = ni_batch.root_from_argv()
 API = "https://api.lts4ai.com/v1/chat/completions"
+PRIMARY_MODEL = "gemini-2.5-flash-lite"  # tier-1: full-pass first screen
+REVIEW_MODEL = "gemini-2.5-flash"        # tier-2: review only flagged/unclear images
+
+def needs_review(rec):
+    """Tier-2 review only for violations flagged or unreliable/unreadable tier-1 results."""
+    if not rec.get("ok"): return True
+    parsed = rec.get("parsed")
+    if not isinstance(parsed, dict): return True
+    violations = parsed.get("violations")
+    if violations is None: return True
+    return bool(violations)
 
 SYS = ("你是京东商品图片合规审核员。逐字读取图片上的所有可见文字与水印标记，然后只输出 JSON，不要解释。")
 USER = ("检查这张商品图。找出下列违规内容：品牌名/品牌Logo/商标、旗舰店/官方/专卖店/授权、电话手机号微信号二维码邮箱、"
@@ -66,7 +77,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--model", default="gemini-2.5-flash")
+    ap.add_argument("--model", default=PRIMARY_MODEL)
+    ap.add_argument("--review-model", default=REVIEW_MODEL)
+    ap.add_argument("--no-review", action="store_true", help="skip tier-2 flash review of flagged/unclear images")
     ap.add_argument("--concurrency", type=int, default=10)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--timeout", type=int, default=180)
@@ -97,7 +110,13 @@ def main():
     n = [0]
     def work(p):
         r = call(key, a.model, p, a.timeout)
-        rec = {"path": p, "model": a.model, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), **r}
+        rec = {"path": p, "model": a.model, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "escalated": False, **r}
+        if not a.no_review and needs_review(r):
+            r2 = call(key, a.review_model, p, a.timeout)
+            first = {"ok": r.get("ok"), "error": r.get("error"),
+                     "violations": ((r.get("parsed") or {}).get("violations"))}
+            rec = {"path": p, "model": a.review_model, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                   "escalated": True, "firstPass": first, **r2}
         with lock:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n"); f.flush()
             n[0] += 1

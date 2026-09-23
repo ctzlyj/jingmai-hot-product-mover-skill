@@ -243,5 +243,50 @@ class PersonRemovalPolicyTests(unittest.TestCase):
         self.assertIn("已消失是预期结果", prompt)
 
 
+
+class TwoTierVisionCascadeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.old_env = os.environ.get("NO_INVENTORY_ROOT")
+        root = make_batch_root()
+        os.environ["NO_INVENTORY_ROOT"] = str(root)
+        cls.old_argv = list(sys.argv)
+        sys.argv = [sys.argv[0]]
+        import oxygen_verify
+        import vision_audit
+        cls.verify = oxygen_verify
+        cls.audit = vision_audit
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.old_env is None:
+            os.environ.pop("NO_INVENTORY_ROOT", None)
+        else:
+            os.environ["NO_INVENTORY_ROOT"] = cls.old_env
+        sys.argv = cls.old_argv
+
+    def test_defaults_are_lite_first_then_flash(self):
+        self.assertEqual(self.verify.PRIMARY_MODEL, "gemini-2.5-flash-lite")
+        self.assertEqual(self.verify.REVIEW_MODEL, "gemini-2.5-flash")
+        self.assertEqual(self.audit.PRIMARY_MODEL, "gemini-2.5-flash-lite")
+        self.assertEqual(self.audit.REVIEW_MODEL, "gemini-2.5-flash")
+
+    def test_verdict_ok_requires_all_four_checks(self):
+        good = {"productSame": True, "violationsCleared": True,
+                "noNewArtifacts": True, "qualityOk": True}
+        self.assertTrue(self.verify.verdict_ok(good))
+        bad = dict(good); bad["violationsCleared"] = False
+        self.assertFalse(self.verify.verdict_ok(bad))
+        self.assertFalse(self.verify.verdict_ok({"parseFail": True, "raw": "noise"}))
+        self.assertFalse(self.verify.verdict_ok({}))
+
+    def test_audit_reviews_only_flagged_or_unclear(self):
+        self.assertFalse(self.audit.needs_review({"ok": True, "parsed": {"violations": []}}))
+        self.assertTrue(self.audit.needs_review(
+            {"ok": True, "parsed": {"violations": [{"term": "TOP"}]}}))
+        self.assertTrue(self.audit.needs_review({"ok": True, "parsed": None}))
+        self.assertTrue(self.audit.needs_review({"ok": False, "error": "HTTP 500"}))
+
+
 if __name__ == "__main__":
     unittest.main()

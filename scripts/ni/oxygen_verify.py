@@ -14,6 +14,13 @@ API = "https://api.lts4ai.com/v1/chat/completions"
 HELPER = str(Path.home() / ".joycode" / "skills" / "sufy-image2" / "scripts" / "read_dpapi_credential.ps1")
 DPAPI = Path(os.environ["LOCALAPPDATA"]) / "JoyCode" / "credentials" / "sufy-image2.dpapi"
 SYS = "你是京东商品图验收员。仔细对比两张图，只输出JSON。"
+PRIMARY_MODEL = "gemini-2.5-flash-lite"  # tier-1: full-pass first screen
+REVIEW_MODEL = "gemini-2.5-flash"        # tier-2: review only failed/unclear verdicts
+VERDICT_KEYS = ("productSame", "violationsCleared", "noNewArtifacts", "qualityOk")
+
+def verdict_ok(v):
+    return all(v.get(k) for k in VERDICT_KEYS)
+
 
 VIO_TXT = {
  "brand": "品牌名/Logo/商标", "flag": "旗舰字样", "official": "官方/正品字样",
@@ -71,10 +78,10 @@ def b64(p,maxside=1200):
     if s<1.0: img=cv2.resize(img,(max(1,int(w*s)),max(1,int(h*s))),interpolation=cv2.INTER_AREA)
     ok,buf=cv2.imencode(".jpg",img,[cv2.IMWRITE_JPEG_QUALITY,82])
     return base64.b64encode(buf.tobytes()).decode("ascii") if ok else None
-def call(key,p1,p2,user_prompt):
+def call(key,p1,p2,user_prompt,model=PRIMARY_MODEL):
     b1,b2=b64(p1),b64(p2)
     if not b1 or not b2: return {"parseFail":True,"raw":"read-fail"}
-    body={"model":"gemini-2.5-flash","temperature":0,"max_tokens":400,
+    body={"model":model,"temperature":0,"max_tokens":400,
           "messages":[{"role":"system","content":SYS},{"role":"user","content":[
             {"type":"text","text":user_prompt},
             {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,"+b1}},
@@ -93,6 +100,9 @@ def main():
     ap.add_argument("--dir", default="image-edits-oxygen")
     ap.add_argument("--concurrency", type=int, default=10)
     ap.add_argument("--person-mode", default="remove", choices=("replace","remove"))
+    ap.add_argument("--model", default=PRIMARY_MODEL)
+    ap.add_argument("--review-model", default=REVIEW_MODEL)
+    ap.add_argument("--no-review", action="store_true", help="skip tier-2 flash review of failed/unclear verdicts")
     a=ap.parse_args()
     key=load_key()
     plan=json.loads((ROOT/"reports"/"regen-plan.json").read_text(encoding="utf-8"))
@@ -132,9 +142,13 @@ def main():
         vios,dmg=meta.get((item,src.name),([],False))
         rec.update(taskType="person" if "person" in vios else ("damage" if dmg and not vios else "standard"), vios=vios, damage=dmg)
         try:
-            v=call(key,src,out,build_user_prompt(vios,dmg,a.person_mode))
-            ok=all(v.get(k) for k in ("productSame","violationsCleared","noNewArtifacts","qualityOk"))
-            rec.update(ok=ok,verdict=v)
+            prompt=build_user_prompt(vios,dmg,a.person_mode)
+            v=call(key,src,out,prompt,a.model)
+            if verdict_ok(v) or a.no_review:
+                rec.update(ok=verdict_ok(v),verdict=v,model=a.model,escalated=False)
+            else:
+                v2=call(key,src,out,prompt,a.review_model)
+                rec.update(ok=verdict_ok(v2),verdict=v2,firstPass=v,model=a.review_model,escalated=True)
         except Exception as e:
             rec.update(ok=False,error=str(e)[:200])
         with lock:
