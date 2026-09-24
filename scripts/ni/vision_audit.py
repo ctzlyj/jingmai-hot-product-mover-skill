@@ -8,9 +8,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import batch as ni_batch  # noqa: E402
 
-ROOT = ni_batch.root_from_argv()
 API = "https://api.lts4ai.com/v1/chat/completions"
-PROMPT_VERSION = 2
+from image_quality_gate import PROMPT_VERSION
 PRIMARY_MODEL = "gemini-2.5-flash-lite"  # tier-1: full-pass first screen
 REVIEW_MODEL = "gemini-2.5-flash"        # tier-2: review only flagged/unclear images
 
@@ -72,6 +71,7 @@ def call(key, model, path, timeout=180):
 
 def main():
     ap = argparse.ArgumentParser()
+    ni_batch.add_root_argument(ap, required=False)
     ap.add_argument("--list", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default=PRIMARY_MODEL)

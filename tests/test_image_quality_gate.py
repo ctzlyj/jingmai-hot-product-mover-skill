@@ -152,7 +152,7 @@ class ImageQualityGateTests(unittest.TestCase):
             for image in manifest['items']['ITEM']['images']:
                 rows.append({'role':image['role'],'source':file_evidence(folder/image['source']),
                              'final':file_evidence(folder/image['final']),'decision':'KEEP','pairAccepted':True})
-            report={'items':{'ITEM':{'sourceFirst':file_evidence(folder/'original/first.png'),'images':rows}}}
+            report={'promptVersion':3,'items':{'ITEM':{'sourceFirst':file_evidence(folder/'original/first.png'),'images':rows}}}
             (folder/'image-quality-acceptance.json').write_text(json.dumps(report),encoding='utf-8')
             enforce_taobao_quality(folder,source,listing)
             Image.new('RGB',(32,32),'red').save(folder/'main/first.png')
@@ -183,7 +183,7 @@ class ImageQualityGateTests(unittest.TestCase):
             records=[{'role':role,'source':file_evidence(path),'final':file_evidence(path),
                       'decision':'KEEP','pairAccepted':True} for role,path in
                      [('main1',first),('detail',a),('detail',b)]]
-            report={'items':{'x':{'sourceFirst':file_evidence(first),'images':records}}}
+            report={'promptVersion':3,'items':{'x':{'sourceFirst':file_evidence(first),'images':records}}}
             candidate={'sourceItemId':'x','mainImages':[str(first)],'detailImages':[str(b),str(a)],'skus':[]}
             self.assertIn('image-quality-order-mismatch',validate_candidate_report(candidate,report,file_evidence(first)))
     def test_report_requires_current_files_and_source_first(self):
@@ -196,12 +196,71 @@ class ImageQualityGateTests(unittest.TestCase):
                 image=Image.new('RGB',(64,64),('white','gray','black')[i]); ImageDraw.Draw(image).rectangle((i*4,8,25+i*4,40),fill='red'); image.save(path)
             record=lambda path: {'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
             candidate={'sourceItemId':'123','mainImages':[str(final)],'detailImages':[str(detail)],'skus':[]}
-            report={'items':{'123':{'sourceFirst':record(original), 'images':[
+            report={'promptVersion':3,'items':{'123':{'sourceFirst':record(original), 'images':[
                 {'role':'main1','source':record(original),'final':record(final),'decision':'KEEP','pairAccepted':True},
                 {'role':'detail','source':record(detail),'final':record(detail),'decision':'KEEP','pairAccepted':True}]}}}
             self.assertEqual(validate_candidate_report(candidate,report,record(original)),[])
             final.write_bytes(b'changed')
             self.assertTrue(any('stale' in e for e in validate_candidate_report(candidate,report,record(original))))
             self.assertTrue(validate_candidate_report(candidate,report,record(detail)))
+
+    def test_dense_origin_must_block_first_even_if_generated_image_looks_clean(self):
+        import tempfile, types
+        from unittest import mock
+        from PIL import Image
+        from image_quality_gate import audit
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            Image.new('RGB',(32,32),'red').save(root/'source.png')
+            Image.new('RGB',(32,32),'blue').save(root/'edited.png')
+            clean={'flags':[],'violations':[],'legible':True,'layoutOk':True,'valuable':True,'uncertain':False}
+            dense=dict(clean,flags=['DENSE_VIOLATIONS'])
+            scanner=types.SimpleNamespace(call=lambda key,model,path: {'ok':True,'parsed':dense if Path(path).name=='source.png' else clean},
+                PRIMARY_MODEL='gemini-2.5-flash-lite',REVIEW_MODEL='gemini-2.5-flash',needs_review=lambda r:bool(r['parsed']['flags']))
+            accepted={k:True for k in ('productSame','violationsCleared','noNewArtifacts','qualityOk','layoutPreserved','safeTextPreserved','textLegible','noHoles','sourceFirstMatched')}
+            pair=types.SimpleNamespace(load_key=lambda:'test-only',call=lambda *a:accepted,
+                PRIMARY_MODEL='gemini-2.5-flash-lite',REVIEW_MODEL='gemini-2.5-flash')
+            manifest={'items':{'one':{'sourceFirst':'source.png', 'images':[
+                {'role':'main1','source':'source.png','final':'edited.png'}]}}}
+            with mock.patch.dict(sys.modules,{'vision_audit':scanner,'oxygen_verify':pair}):
+                report=audit(manifest,root)
+            self.assertEqual(report['promptVersion'],3)
+            self.assertEqual(report['items']['one']['images'][0]['decision'],'BLOCK')
+
+    def test_report_version_and_identical_detail_main_block(self):
+        import shutil,tempfile
+        from PIL import Image, ImageDraw
+        from image_quality_gate import file_evidence
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            first=root/'first.png';same=root/'detail.png'
+            image=Image.new('RGB',(64,64),'white')
+            ImageDraw.Draw(image).rectangle((10,15,40,30),fill='red')
+            image.save(first);shutil.copyfile(first,same)
+            candidate={'sourceItemId':'x','mainImages':[str(first)],'detailImages':[str(same)],'skus':[]}
+            rows=[{'role':role,'source':file_evidence(p),'final':file_evidence(p),'decision':'KEEP','pairAccepted':True}
+                  for role,p in [('main1',first),('detail',same)]]
+            report={'promptVersion':3,'items':{'x':{'sourceFirst':file_evidence(first),'images':rows}}}
+            self.assertIn('detail-duplicates-main:'+str(same),validate_candidate_report(candidate,report,file_evidence(first)))
+            old=dict(report,promptVersion=2)
+            self.assertIn('image-quality-report-version-mismatch',validate_candidate_report(candidate,old,file_evidence(first)))
+
+    def test_prompt_classifies_dense_violations_on_first_image_too(self):
+        from image_quality_gate import SINGLE_PROMPT
+        self.assertIn('\u9996\u4e3b\u56fe',SINGLE_PROMPT)
+        self.assertIn('DENSE_VIOLATIONS',SINGLE_PROMPT)
+
+    def test_taobao_draft_without_batch_ledger_can_import_vision_clients(self):
+        import os,subprocess,tempfile
+        ni=Path(__file__).resolve().parents[1]/'scripts'/'ni'
+        with tempfile.TemporaryDirectory() as tmp:
+            env=os.environ.copy();env.pop('NO_INVENTORY_ROOT',None)
+            probe=("import sys; sys.path.insert(0,sys.argv[2]); "
+                   "draft=sys.argv[1];sys.argv=['image_quality_gate.py','--root',draft]; "
+                   "import oxygen_verify,vision_audit; print('IMPORT_OK')")
+            result=subprocess.run([sys.executable,'-B','-c',probe,tmp,str(ni)],env=env,
+                                  capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=15)
+            self.assertEqual(result.returncode,0,(result.stderr or '')[-300:])
+            self.assertIn('IMPORT_OK',result.stdout)
 
 if __name__ == '__main__': unittest.main()

@@ -12,6 +12,8 @@ import hashlib
 import json
 from pathlib import Path
 
+PROMPT_VERSION = 3
+
 DELETE_FLAGS = frozenset({
     "PATENT", "TAOJINBI", "PRICE_EXPLANATION", "PLATFORM_DELIVERY",
     "PLATFORM_PROMOTION", "BRAND_INFO_ONLY", "COMPANY_PROFILE",
@@ -94,6 +96,8 @@ def duplicate_details(paths, threshold=4):
 def validate_candidate_report(candidate, report, source_first):
     """Check report coverage and actual bytes before any upload/validation/publish."""
     errors = []
+    if isinstance(report, dict) and report.get("promptVersion") != PROMPT_VERSION:
+        errors.append("image-quality-report-version-mismatch")
     item = str(candidate.get("sourceItemId") or "")
     entry = (report.get("items") or {}).get(item) if isinstance(report, dict) else None
     if not isinstance(entry, dict):
@@ -139,6 +143,14 @@ def validate_candidate_report(candidate, report, source_first):
             errors.append("source-first-not-paired")
     else:
         errors.append("first-main-missing")
+    main_hashes = {(by_path.get((role, str(Path(path).resolve()))) or {}).get("final", {}).get("sha256")
+                   for role, path in selected if role in ("main1", "main")}
+    for role, path in selected:
+        if role != "detail":
+            continue
+        detail_sha = (by_path.get((role, str(Path(path).resolve()))) or {}).get("final", {}).get("sha256")
+        if detail_sha and detail_sha in main_hashes:
+            errors.append("detail-duplicates-main:" + str(path))
     try:
         for pair in duplicate_details([p for role, p in selected if role == "detail"]):
             errors.append("detail-near-duplicate:" + pair["path"])
@@ -150,7 +162,8 @@ def validate_candidate_report(candidate, report, source_first):
 SINGLE_PROMPT = (
     "审核最终候选商品图。逐字核对文字、字形、商品、画面。专利/专利证书、淘金币、价格或活动说明、"
     "天猫明日达等平台服务和活动图、品牌信息页、公司介绍、源头工厂以及低价值图一律判删除；"
-    "违规点过密的非首图判删除。小面积违规标 SMALL_VIOLATION 待局部修复；未经违规的原有文字不应被删除。"
+    "不论是否首主图，只要违规内容占画面大面积、遍布多个区域，或移除后必须整块改写正常排版，一律标 DENSE_VIOLATIONS；首主图应 BLOCK 整件，其余图应删除，不得仅标 SMALL_VIOLATION。"
+    "小面积违规才标 SMALL_VIOLATION 待局部修复；未经违规的原有文字不应被删除。"
     "检查缺字乱码、排版错误、大面积留白空洞及商品变形。仅输出 JSON："
     "flags 可以从 PATENT、TAOJINBI、PRICE_EXPLANATION、PLATFORM_DELIVERY、PLATFORM_PROMOTION、"
     "BRAND_INFO_ONLY、COMPANY_PROFILE、SOURCE_FACTORY、DENSE_VIOLATIONS、LOW_VALUE、"
@@ -221,7 +234,7 @@ def audit(manifest, root):
     import oxygen_verify as pair_model
     import vision_audit as single_model
     key = pair_model.load_key()  # DPAPI only; never persist/print the key
-    output = {"schema": "image-quality-acceptance/1", "items": {}}
+    output = {"schema": "image-quality-acceptance/1", "promptVersion": PROMPT_VERSION, "items": {}}
     for item, data in manifest["items"].items():
         source_first = file_evidence(root / data["sourceFirst"])
         rows = []

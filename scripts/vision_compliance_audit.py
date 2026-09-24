@@ -20,7 +20,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-PROMPT_VERSION = 2
+from ni.image_quality_gate import PROMPT_VERSION
 DEFAULT_PRIMARY_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_REVIEW_MODEL = "gemini-2.5-flash"
 API = "https://api.lts4ai.com/v1/chat/completions"

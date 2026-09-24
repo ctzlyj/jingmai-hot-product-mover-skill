@@ -5,8 +5,9 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import oxygen_verify as V
+import batch as ni_batch
 
-R = V.ROOT
+R = ni_batch.root_from_argv()
 reuse = json.loads((R/"reports"/"damage-reuse-plan.json").read_text(encoding="utf-8"))
 key = V.load_key()
 pairs = []
