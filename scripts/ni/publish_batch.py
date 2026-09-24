@@ -80,7 +80,7 @@ def main() -> None:
                 if state.get("stage") in A.AWAITING_VERIFICATION:
                     submissions.append({"sourceItemId": sid, "stage": state["stage"], "resumed": True})
                     continue
-                if not state.get("stage") or state.get("stage") in {"JD_VALIDATION_BLOCKED", "JD_VALIDATED"}:
+                if not state.get("stage") or state.get("stage") in {"JD_VALIDATION_BLOCKED", "JD_VALIDATED", "VALIDATING"}:
                     state = A.validate_one(sid, args.confirm)
                 if state.get("stage") == "JD_VALIDATED":
                     state = A.publish_one(sid, args.confirm)

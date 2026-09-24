@@ -17,6 +17,10 @@
 3. 对保留图做来源与结果双图比对：商品相同、违规点消除、正常文字与字体/布局保留、无乱码错字/裁断/留白空洞；任一失败 `BLOCK`。对整商品详情做哈希/近重复检查，详情与主图完全同图也视为重复并拦截，含可疑项不自动删，审定后从候选中剔除；已删项不计入待上架数量。若产生删除，保持保留页原有相对顺序及 SKU 归属，**不强制原图数量一致**。
 4. `scripts/ni/image_quality_gate.py` 输出按源图/结果图 SHA-256 绑定的 `reports/image-quality-acceptance.json`。`listing_batch.py prepare`、`validate`、`publish` 检查每张候选图的覆盖、源首图、配对结果、近重复与哈希；缺报告、提示词版本不符（当前 v3）、结果不合格或修改后报告过期均先拦截，不能因单图 `CLEAN` 放行。`imageQualityGate` 新批次默认 `strict`；只有此前已建立且明确注明历史兼容的批次才可显式标 `legacy`，不能给新链接关闭门禁。
 
+For a new strict Taobao draft, the reviewed image mapping and every selected media byte are bound to its uploaded-listing checkpoint. After upload and again after JD validation, a changed image, review, uploaded manifest, local listing, validation body, or publish body stops before product creation. An old upload checkpoint without a matching review snapshot is not evidence of the newly reviewed images; rebuild a fresh reviewed upload before continuing. The existing remote-product reconciliation path remains separate.
+
+Validated payload provenance (offline regression): after JD schema validation, a revised candidate and a newly accepted image report could still be published with the old `validation-body.json`. Now `validate` records SHA-256 for the exact candidate JSON, this item's accepted image mapping, and the validation request body; it rechecks them after JD validation. `publish` checks these again before identity/network calls. Any changed or missing snapshot, including old `JD_VALIDATED` states without hashes, requires revalidation. `VALIDATING` can be resumed by revalidation; `SUBMITTING` and unknown-write states require reconciliation using the original persisted item number, never a replay based on a newly edited candidate. This is a local regression, not an online remediation receipt.
+
 清单样例（使用批次根目录下相对路径；`source` 必须是当前来源表落盘原图，`final` 是 **最终会上传** 的 candidate 实际图片路径（如 `candidates/<item>/normalized/`，未需归一化时可能是 `images/compliant/`）；若详情删页则清单只包含保留页）：
 
 ```json

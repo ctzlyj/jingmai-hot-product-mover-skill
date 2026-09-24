@@ -621,6 +621,35 @@ def exact_remote_matches(candidate: dict) -> list[dict]:
     return [row for row in rows if str(row.get("itemNum") or "") == candidate["itemNumber"]]
 
 
+def quality_item_sha256(source_id: str) -> str | None:
+    """Fingerprint the reviewed image mapping for this item, not other batch items."""
+    if CONFIG.get("imageQualityGate", "strict") == "legacy":
+        return None
+    report = load(ROOT / "reports" / "image-quality-acceptance.json")
+    item = report["items"][source_id]
+    content = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def validation_snapshot_errors(source_id: str, state: dict) -> list[str]:
+    """No publish using a candidate/media mapping or request older than validation."""
+    destination = ROOT / "candidates" / source_id
+    errors = []
+    for key, filename in (("validatedCandidateSha256", "candidate.json"),
+                          ("validatedBodySha256", "validation-body.json")):
+        path = destination / filename
+        if not state.get(key) or not path.is_file() or state[key] != hashlib.sha256(path.read_bytes()).hexdigest():
+            errors.append(filename)
+    if CONFIG.get("imageQualityGate", "strict") != "legacy":
+        try:
+            current = quality_item_sha256(source_id)
+        except (OSError, KeyError, ValueError, TypeError):
+            current = None
+        if not state.get("validatedQualityItemSha256") or state["validatedQualityItemSha256"] != current:
+            errors.append("image-quality-acceptance.json:item")
+    return errors
+
+
 def validate_one(source_id: str, confirm: str) -> dict:
     if confirm != "PUBLISH_TO_JD":
         raise RuntimeError("缺少发布确认字符串 PUBLISH_TO_JD；未上传图片")
@@ -632,6 +661,13 @@ def validate_one(source_id: str, confirm: str) -> dict:
     quality_errors = image_quality_errors(candidate)
     if quality_errors:
         raise RuntimeError(f"image quality gate failed: {quality_errors}")
+    state_path = destination / "state.json"
+    previous = load(state_path) if state_path.exists() else {}
+    if previous.get("stage") in {"SUBMITTING", "SUBMISSION_RESULT_REQUIRES_RECONCILIATION"}:
+        raise RuntimeError("unknown write result; reconcile original itemNumber before validating again")
+    candidate_sha = hashlib.sha256((destination / "candidate.json").read_bytes()).hexdigest()
+    quality_sha = quality_item_sha256(source_id)
+    save(state_path, {"sourceItemId": source_id, "stage": "VALIDATING", "updatedAt": now()})
     identity()
     matches = exact_remote_matches(candidate)
     if matches:
@@ -651,11 +687,17 @@ def validate_one(source_id: str, confirm: str) -> dict:
     }
     body_path = destination / "validation-body.json"
     save(body_path, body)
+    body_sha = hashlib.sha256(body_path.read_bytes()).hexdigest()
     response = cli.run_jdo_large(
         url="/rest/sp-product/v0/product-schemas/validations",
         method="POST", body_path=body_path, skill_id="jdo-product-publish", yes=True,
     )
     save(destination / "validation-response.json", response)
+    if (candidate_sha != hashlib.sha256((destination / "candidate.json").read_bytes()).hexdigest()
+            or body_sha != hashlib.sha256(body_path.read_bytes()).hexdigest()
+            or quality_sha != quality_item_sha256(source_id)
+            or image_quality_errors(candidate)):
+        raise RuntimeError("media or validation payload changed during JD validation; revalidate")
     violations = (response.get("data") or {}).get("wareKeeperDetectResultList") or []
     blocking = [row for row in violations if int(row.get("detectResult") or 0) == 1]
     state = {
@@ -663,8 +705,11 @@ def validate_one(source_id: str, confirm: str) -> dict:
         "stage": "JD_VALIDATED" if not blocking else "JD_VALIDATION_BLOCKED",
         "validatedAt": now(),
         "blockingViolations": blocking,
+        "validatedCandidateSha256": candidate_sha,
+        "validatedBodySha256": body_sha,
+        "validatedQualityItemSha256": quality_sha,
     }
-    save(destination / "state.json", state)
+    save(state_path, state)
     return state
 
 
@@ -680,6 +725,9 @@ def publish_one(source_id: str, confirm: str) -> dict:
     quality_errors = image_quality_errors(candidate)
     if quality_errors:
         raise RuntimeError(f"image quality gate failed: {quality_errors}")
+    stale = validation_snapshot_errors(source_id, state)
+    if stale:
+        raise RuntimeError(f"validation snapshot stale: {stale}; revalidate before publish")
     identity()
     matches = exact_remote_matches(candidate)
     if matches:
@@ -858,8 +906,10 @@ def run_batch(confirm: str) -> None:
                 submission_results.append({"sourceItemId": source_id, "stage": "VERIFIED", "resumed": True})
                 continue
             if state.get("stage") in {"SUBMITTING", "SUBMISSION_RESULT_REQUIRES_RECONCILIATION"}:
-                candidate = load(ROOT / "candidates" / source_id / "candidate.json")
-                matches = exact_remote_matches(candidate)
+                original_item = str(state.get("itemNumber") or "")
+                if not original_item:
+                    raise RuntimeError("write result unknown and original itemNumber missing; manual reconciliation required")
+                matches = exact_remote_matches({"itemNumber": original_item})
                 if len(matches) == 1:
                     state.update(stage="REMOTE_RECONCILED_AWAITING_VERIFICATION",
                                  productId=int(matches[0]["productId"]),
@@ -872,7 +922,7 @@ def run_batch(confirm: str) -> None:
                                                "error": "写入结果尚不明确，未重放提交"})
                     print(json.dumps({"phase": "submit", **submission_results[-1]}, ensure_ascii=False), flush=True)
                     continue
-            if not state.get("stage") or state.get("stage") in {"JD_VALIDATION_BLOCKED", "JD_VALIDATED"}:
+            if not state.get("stage") or state.get("stage") in {"JD_VALIDATION_BLOCKED", "JD_VALIDATED", "VALIDATING"}:
                 state = validate_one(source_id, confirm)
             if state.get("stage") == "JD_VALIDATED":
                 state = publish_one(source_id, confirm)

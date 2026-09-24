@@ -66,15 +66,23 @@ def main() -> None:
                     if stage == "PRODUCT_APPLY_REJECTED":
                         archive_state(sp, sid)
                         state, stage = {}, None
-                    if not stage or stage in ("JD_VALIDATION_BLOCKED", "JD_VALIDATED", "SUBMISSION_RESULT_REQUIRES_RECONCILIATION"):
-                        if stage == "SUBMISSION_RESULT_REQUIRES_RECONCILIATION":
-                            state = A.load(sp)
-                            pid = state.get("productId") or state.get("applyId")
-                            if pid:
-                                state.update(stage="SUBMITTED_AWAITING_VERIFICATION")
-                                A.save(sp, state)
-                                row["submitStage"] = "SUBMITTED_AWAITING_VERIFICATION"
-                                break
+                    if stage in ("SUBMITTING", "SUBMISSION_RESULT_REQUIRES_RECONCILIATION"):
+                        original_item = str(state.get("itemNumber") or "")
+                        if not original_item:
+                            raise RuntimeError("write result unknown and original itemNumber missing; manual reconciliation required")
+                        matches = A.exact_remote_matches({"itemNumber": original_item})
+                        if len(matches) == 1:
+                            state.update(stage="REMOTE_RECONCILED_AWAITING_VERIFICATION",
+                                         productId=int(matches[0]["productId"]),
+                                         applyId=str(matches[0]["productId"]), updatedAt=A.now())
+                            A.save(sp, state)
+                            row["submitStage"] = state["stage"]
+                            row["productId"] = state["productId"]
+                        else:
+                            row["submitStage"] = "SUBMISSION_RESULT_REQUIRES_RECONCILIATION"
+                            row["error"] = "write result unknown; no replay until remote state is reconciled"
+                        break
+                    if not stage or stage in ("JD_VALIDATION_BLOCKED", "JD_VALIDATED", "VALIDATING"):
                         state = A.validate_one(sid, args.confirm)
                         stage = state.get("stage")
                     if stage == "JD_VALIDATION_BLOCKED":

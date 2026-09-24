@@ -143,6 +143,40 @@ def enforce_taobao_quality(folder: Path, source: dict[str, Any], listing: dict[s
         raise pipeline.PipelineError("image quality gate failed: " + "; ".join(errors))
 
 
+def taobao_quality_stamp(folder: Path, source: dict[str, Any], listing: dict[str, Any]) -> str | None:
+    """Bind an accepted review to all media bytes and the current item mapping."""
+    if source.get("sourcePlatform") != "taobao" or source.get("imageQualityGate") != "strict":
+        return None
+    enforce_taobao_quality(folder, source, listing)
+    manifest = create_manifest_from_listing(folder, source, listing)
+    item_id = str(source["sourceSku"])
+    current = manifest["items"][item_id]
+    evidence = {
+        "review": mover.read_json(folder / "image-quality-acceptance.json")["items"][item_id],
+        "sourceFirst": file_evidence(folder / current["sourceFirst"]),
+        "images": [{"role": row["role"], "source": file_evidence(folder / row["source"]),
+                    "final": file_evidence(folder / row["final"])}
+                   for row in current["images"]],
+        "listingImages": [{key: value for key, value in row.items() if key != "upload"}
+                          for row in listing.get("images") or []],
+    }
+    payload = json.dumps(evidence, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def require_reviewed_upload(folder: Path, source: dict[str, Any], listing: dict[str, Any],
+                            stamp: str | None, uploaded_path: Path) -> None:
+    if stamp is None:
+        return
+    if taobao_quality_stamp(folder, source, listing) != stamp:
+        raise pipeline.PipelineError("image quality snapshot changed; review and re-upload required")
+    snapshot_path = uploaded_path.parent / "upload-quality-snapshot.json"
+    snapshot = mover.read_json(snapshot_path) if snapshot_path.is_file() else {}
+    if (not uploaded_path.is_file() or snapshot.get("reviewSha256") != stamp
+            or snapshot.get("uploadedSha256") != hashlib.sha256(uploaded_path.read_bytes()).hexdigest()):
+        raise pipeline.PipelineError("uploaded media does not match the accepted image review; use a fresh reviewed upload")
+
+
 def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
     folder = args.folder.resolve()
     listing_path = folder / "listing.json"
@@ -212,6 +246,7 @@ def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
                 usedVendorSkuCount=len(used_codes),
             )
 
+            review_stamp = taobao_quality_stamp(folder, source, listing)
             if not uploaded_path.is_file():
                 upload_result = jingmai.command_upload(SimpleNamespace(
                     input=listing_path, reference=args.reference,
@@ -220,9 +255,20 @@ def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
                 if upload_result:
                     pipeline.save_state(state_path, "FAILED_UPLOAD")
                     raise pipeline.PipelineError("图片上传失败")
+                if review_stamp is not None:
+                    if taobao_quality_stamp(folder, source, listing) != review_stamp:
+                        raise pipeline.PipelineError("image quality snapshot changed during upload; stop before validation")
+                    mover.write_json(uploaded_path.parent / "upload-quality-snapshot.json", {
+                        "reviewSha256": review_stamp,
+                        "uploadedSha256": hashlib.sha256(uploaded_path.read_bytes()).hexdigest(),
+                    })
+            require_reviewed_upload(folder, source, listing, review_stamp, uploaded_path)
             state = pipeline.save_state(state_path, "MEDIA_UPLOADED", uploadedListing=str(uploaded_path))
 
             payload_info = jingmai.write_publish_payloads(uploaded_path, publish_dir)
+            listing_sha = hashlib.sha256(listing_path.read_bytes()).hexdigest()
+            validation_body_sha = hashlib.sha256((publish_dir / "validation-body.json").read_bytes()).hexdigest()
+            publish_body_sha = hashlib.sha256((publish_dir / "publish-body.json").read_bytes()).hexdigest()
             state = pipeline.save_state(state_path, "LOCAL_DRAFT_BUILT", payloads=payload_info)
             validation_response = jingmai.run_jdo_large(
                 url="/rest/sp-product/v0/product-schemas/validations", method="POST",
@@ -230,6 +276,11 @@ def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
                 skill_id="jdo-product-publish", yes=True,
             )
             mover.write_json(validation_path, validation_response)
+            require_reviewed_upload(folder, source, listing, review_stamp, uploaded_path)
+            if (hashlib.sha256(listing_path.read_bytes()).hexdigest() != listing_sha
+                    or hashlib.sha256((publish_dir / "validation-body.json").read_bytes()).hexdigest() != validation_body_sha
+                    or hashlib.sha256((publish_dir / "publish-body.json").read_bytes()).hexdigest() != publish_body_sha):
+                raise pipeline.PipelineError("validation or publish payload changed during JD validation; rebuild and revalidate")
             violations = pipeline.validation_violations(validation_response)
             strong = [item for item in violations if int(item.get("detectResult") or 0) == 1]
             if strong:
