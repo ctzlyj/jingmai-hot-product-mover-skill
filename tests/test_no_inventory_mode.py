@@ -44,6 +44,7 @@ def make_batch_root() -> Path:
         "stock": 200,
         "sevenDayReturn": "1",
         "personHandling": "remove",
+        "imageQualityGate": "legacy",  # existing fixture; new batches default strict
         "pricing": NO_INVENTORY_PRICING,
     }
     (root / "batch-config.json").write_text(
@@ -265,6 +266,18 @@ class TwoTierVisionCascadeTests(unittest.TestCase):
             os.environ["NO_INVENTORY_ROOT"] = cls.old_env
         sys.argv = cls.old_argv
 
+    def test_main_count_reduction_refused_even_with_allow_count_change(self):
+        from unittest import mock
+        import update_main_images as updater
+        candidate = {"saleComponents": {"style": {"componentCode": "sale-prop-1"}}, "skus": []}
+        detail = {"material": {"mainImages": [{"uuid": "0000000000", "imageInfoList": [
+            {"orderSort": 1, "imgUrl": "a"}, {"orderSort": 2, "imgUrl": "bad"}]}]}}
+        with mock.patch.object(updater.cli, "online_style_color_ids", return_value={}):
+            changed, _unchanged, errors, _expected = updater.compare_groups(
+                candidate, detail, {"0000000000": ["a"]}, allow_count_change=True)
+        self.assertEqual(changed, [])
+        self.assertTrue(any("delete-unsupported" in message for message in errors))
+
     def test_defaults_are_lite_first_then_flash(self):
         self.assertEqual(self.verify.PRIMARY_MODEL, "gemini-2.5-flash-lite")
         self.assertEqual(self.verify.REVIEW_MODEL, "gemini-2.5-flash")
@@ -281,7 +294,8 @@ class TwoTierVisionCascadeTests(unittest.TestCase):
         self.assertFalse(self.verify.verdict_ok({}))
 
     def test_audit_reviews_only_flagged_or_unclear(self):
-        self.assertFalse(self.audit.needs_review({"ok": True, "parsed": {"violations": []}}))
+        self.assertFalse(self.audit.needs_review({"ok": True, "parsed": {"violations": [], "flags": [], "legible": True, "layoutOk": True, "valuable": True}}))
+        self.assertTrue(self.audit.needs_review({"ok": True, "parsed": {"violations": []}}))
         self.assertTrue(self.audit.needs_review(
             {"ok": True, "parsed": {"violations": [{"term": "TOP"}]}}))
         self.assertTrue(self.audit.needs_review({"ok": True, "parsed": None}))

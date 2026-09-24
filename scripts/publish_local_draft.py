@@ -16,6 +16,7 @@ from typing import Any
 import jd_product_mover as mover
 import jd_product_pipeline as pipeline
 import jdo_listing_mvp as jingmai
+from ni.image_quality_gate import create_manifest_from_listing, file_evidence, validate_candidate_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,6 +121,28 @@ def update_shared_uploaded_images(
     return added
 
 
+def enforce_taobao_quality(folder: Path, source: dict[str, Any], listing: dict[str, Any]) -> None:
+    """Strict only for new Taobao drafts; existing drafts without the marker are unchanged."""
+    if source.get("sourcePlatform") != "taobao" or source.get("imageQualityGate") != "strict":
+        return
+    try:
+        manifest = create_manifest_from_listing(folder, source, listing)
+        item_id = str(source["sourceSku"])
+        rows = manifest["items"][item_id]["images"]
+        main_paths = [str((folder / row["final"]).resolve()) for row in rows if row["role"] in ("main1", "main")]
+        detail_paths = [str((folder / row["final"]).resolve()) for row in rows if row["role"] == "detail"]
+        sku_paths = [str((folder / row["final"]).resolve()) for row in rows if row["role"] == "sku"]
+        candidate = {"sourceItemId": item_id, "mainImages": main_paths, "detailImages": detail_paths,
+                     "skus": [{"mainImage": path} for path in sku_paths]}
+        report = mover.read_json(folder / "image-quality-acceptance.json")
+        original = file_evidence(folder / manifest["items"][item_id]["sourceFirst"])
+        errors = validate_candidate_report(candidate, report, original)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise pipeline.PipelineError("image quality gate: source/report missing or unreadable") from exc
+    if errors:
+        raise pipeline.PipelineError("image quality gate failed: " + "; ".join(errors))
+
+
 def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
     folder = args.folder.resolve()
     listing_path = folder / "listing.json"
@@ -139,6 +162,7 @@ def publish_local_draft(args: argparse.Namespace) -> dict[str, Any]:
         state = mover.read_json(state_path)
         source = mover.read_json(source_path)
         listing = mover.read_json(listing_path)
+        enforce_taobao_quality(folder, source, listing)
         store_config = mover.read_json(args.store_config)
         rules = pipeline.effective_rules(mover.read_json(args.rules), store_config)
         store = pipeline.verify_store_identity(store_config, args.profile)

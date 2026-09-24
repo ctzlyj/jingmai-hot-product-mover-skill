@@ -108,6 +108,7 @@
 - 人物处理统一口径：只要有人（不管是否真人），用 sufy “移除人物 + 背景自然补全”；不再尝试“替换人物”（sufy 对真人替换有安全拒绝，移除模式实测全部通过）。
 - 每张修改图重新扫描并生成合规报告；用户判定保留原图的按用户决定执行。
 
+新链接额外执行 `references/image-quality-gate.md`：固定来源首主图，小违规仅局部生图并保留正常信息、字体和排版；专利证书、淘金币、价格/活动说明、天猫明日达等平台图直接删；整商品详情去近重复、无价值页和乱码空洞。双图逐张比较，报告缺失或哈希过期禁止发布。删图改候选后用 `listing_batch.py recheck` 重验现有候选，勿重跑 `prepare` 把已删除页恢复。`scripts/ni/image_quality_gate.py` 生成门禁报告，新批次 `imageQualityGate` 默认 `strict`；既有批次仅为历史兼容可明确设 `legacy`，不能给新批次绕过门禁。
 ### 8.3 模型路由（实测通过率）
 
 生图池顺序：Oxygen-Product-Pro → Oxygen-Imagen → sufy-image2，失败自动流水线转下一个，同图打回重试不超过 2 轮。
@@ -118,7 +119,7 @@
 | Oxygen-Imagen | 最多 8 参考图、高保真编辑 | ~68% | 同上网关，人物类任务更适合 |
 | sufy-image2 | 高并发兜底主力 | ~93% | 生图任务效率优先，全兜底 |
 
-验收：LTS4AI 双档复核——`gemini-2.5-flash-lite` 双图对比（原图 vs 修改图）全量初筛，任务感知口径（人物任务允许构图变化；损伤修复任务允许修字；移除模式按移除口径判）；疑似不合格或解析失败的图以 `gemini-2.5-flash` 复核为准。PASS 优先级 pro > imagen > sufy。
+验收：LTS4AI 双档复核——`gemini-2.5-flash-lite` 双图对比（原图 vs 修改图）全量初筛，任务感知口径（人物任务允许构图变化；损伤修复任务允许修字；移除模式按移除口径判）；疑似不合格或解析失败的图用 `gemini-2.5-flash` 复核；两档冲突不得自动判通过。PASS 优先级 pro > imagen > sufy。
 
 API Key 一律走 DPAPI 凭据（`%LOCALAPPDATA%\JoyCode\credentials\` 下 `oxygen-product-pro.dpapi`、`sufy-image2.dpapi`），密钥绝不进源码、日志、文档或回复；Key 失效找用户要新的并立即换 DPAPI 存储。
 
@@ -137,7 +138,7 @@ API Key 一律走 DPAPI 凭据（`%LOCALAPPDATA%\JoyCode\credentials\` 下 `oxyg
 ### 线上补丁规则（实测）
 
 - 先 dry-run 再 apply；`PATCH_SUBMITTED` 后必须独立回读确认 `ALREADY_CURRENT`，PATCH 成功不等于生效。
-- 主图 `WareSkuImg` PATCH 是按槽位覆盖合并：提交比线上更少的 value 不会删除尾部图，尾部槽保留原图（本批 2 件实测复现：违规图残留尾部槽位）。删除主图的可靠替代是用同组干净图顶替该槽位、保持数量不变；真删除接口未验证，列为待办。`update_main_images.py --allow-count-change` 仅放行数量差异提交，不解决平台槽位合并，勿依赖其完成删除。
+- 主图 `WareSkuImg` PATCH 是按槽位覆盖合并：提交比线上更少的 value 不会删除尾部图，尾部槽保留原图（本批 2 件实测复现：违规图残留尾部槽位）。本批曾用同组干净图顶替该槽位；现用户明确不接受因此产生的重复，不再沿用此法。真删除接口未验证，列为待办；无法真正删该违规主图就暂缓，不能宣称修好。`update_main_images.py --allow-count-change` 仅放行数量差异提交，不解决平台槽位合并，勿依赖其完成删除。
 - SKU 线上图源取 `candidates/<item>/normalized/`（不是 compliant）。
 - 详情全量刷新走 `refresh_detail_full.py`。
 - 用户自行下架的商品只备素材，不代为上架。
@@ -154,6 +155,7 @@ API Key 一律走 DPAPI 凭据（`%LOCALAPPDATA%\JoyCode\credentials\` 下 `oxyg
 | `oxygen_pool.py` | 内部网关生图池（pro/imagen 路由，并发 2-3） |
 | `sufy_fallback.py` | sufy 高并发兜底（人物=移除口径） |
 | `oxygen_verify.py` | LTS4AI 视觉验收（任务感知口径，人物默认移除模式） |
+| `image_quality_gate.py` | 来源-结果双图验收、专利/平台图删修决策、详情近重复与 SHA 绑定报告 |
 | `apply_model_edits.py` | 验收 PASS 图回写 candidates（dry-run/apply） |
 | `publish_batch.py` / `publish_retry.py` | 批量发布与幂等重试（reconcile before replay） |
 | `verify_local.py` / `reuse_verify.py` | 本地残留核验与复用模型输出核验 |

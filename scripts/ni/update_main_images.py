@@ -111,6 +111,9 @@ def compare_groups(
                     f"expected={len(group['urls'])}"
                 )
                 continue
+            if len(online_images) > len(group["urls"]):
+                errors.append(f"group {color_id} main-image-delete-unsupported: online={len(online_images)} expected={len(group['urls'])}")
+                continue  # WareSkuImg merges slots: shorter value does NOT delete tail
             group["countChange"] = {"online": len(online_images), "expected": len(group["urls"])}
         positions = {int(image.get("orderSort") or 0): cli.detail_image_url(str(image.get("imgUrl") or "")) for image in online_images}
         diffs = []
@@ -170,7 +173,7 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm", default="")
     parser.add_argument("--allow-count-change", action="store_true",
-                        help="explicitly allow main-image count change (e.g. deleting a brand-info page)")
+                        help="allow increased image count; reduction is refused until verified true-delete support")
     args = parser.parse_args()
     A.set_root(args.root)
     if args.apply and args.confirm != "UPDATE_PRODUCT_IMAGES":

@@ -9,6 +9,7 @@ process-local LTS4AI_API_KEY environment variable and is never persisted.
 import argparse
 import base64
 import io
+import hashlib
 import json
 import os
 import re
@@ -19,18 +20,13 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+PROMPT_VERSION = 2
 DEFAULT_PRIMARY_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_REVIEW_MODEL = "gemini-2.5-flash"
 API = "https://api.lts4ai.com/v1/chat/completions"
 
 SYS_PROMPT = ("你是京东商品图片合规审核员。逐字读取图片上的所有可见文字与水印标记，然后只输出 JSON，不要解释。")
-USER_PROMPT = ("检查这张商品图。找出下列违规内容：品牌名/品牌Logo/商标、旗舰店/官方/专卖店/授权、电话手机号微信号二维码邮箱、"
-               "厂家直销/工厂直销/直供、德国/日本/进口/海外等产地进口词、淘宝/天猫/TMALL/拼多多/抖音/小红书等第三方平台信息、"
-               "其他店铺水印、极限词（最、第一、第一名、顶级、绝对、唯一、100%、除尽等）、"
-               "价格说明（原价/划线价/券后价/售价/标价/指导价/元/¥/折）、促销（秒杀/立减/优惠券/限时/包邮/国补/补贴/赠品）、"
-               "榜单排名（榜单/TOP/热卖/热销/销量/排行榜）。\n"
-               "输出 JSON：{\"violations\":[{\"term\":\"命中的违规词\",\"text\":\"该词所在的完整文字片段\"}],\"other_text\":\"图中其它主要文字\"}\n"
-               "没有任何违规时 violations 为空数组。")
+from ni.image_quality_gate import SINGLE_PROMPT as USER_PROMPT, DELETE_FLAGS, _flags, decide
 
 
 def encode_image(path, max_side=1400, jpeg_quality=82):
@@ -57,9 +53,11 @@ def is_review_needed(record):
     if not isinstance(parsed, dict):
         return True
     violations = parsed.get("violations")
-    if violations is None:
+    if not isinstance(violations, list) or not isinstance(parsed.get("flags"), list):
         return True
-    return bool(violations)
+    if any(parsed.get(k) is not True for k in ("legible", "layoutOk", "valuable")):
+        return True
+    return bool(parsed.get("uncertain") or parsed.get("flags") or violations)
 
 
 def _extract_json(text):
@@ -115,8 +113,10 @@ def load_done(out_path):
                     continue
                 try:
                     record = json.loads(line)
-                    if record.get("ok"):
-                        done[record["path"]] = record
+                    path = Path(record["path"])
+                    if (record.get("ok") and record.get("promptVersion") == PROMPT_VERSION
+                            and path.is_file() and record.get("sha256") == hashlib.sha256(path.read_bytes()).hexdigest()):
+                        done[str(path)] = record
                 except (ValueError, KeyError, TypeError):
                     continue
     return done
@@ -132,8 +132,9 @@ def run_pass(key, model, paths, out_path, concurrency, timeout):
     completed = [0]
 
     def work(path):
-        record = {"path": path, "model": model, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                  **call_model(key, model, path, timeout)}
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest() if Path(path).is_file() else None
+        record = {"path": path, "model": model, "promptVersion": PROMPT_VERSION, "sha256": digest,
+                  "at": time.strftime("%Y-%m-%dT%H:%M:%S"), **call_model(key, model, path, timeout)}
         return record
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
@@ -190,13 +191,21 @@ def main(argv=None):
         if is_review_needed(primary_record):
             review_record = review.get(path, {})
             if review_record.get("ok") and isinstance(review_record.get("parsed"), dict):
-                item["status"] = "VIOLATION" if review_record["parsed"].get("violations") else "CLEAN"
-                item["review"] = {"violations": review_record["parsed"].get("violations")}
+                primary_parsed = primary_record.get("parsed") or {}
+                review_parsed = review_record["parsed"]
+                decision = decide("detail", primary_parsed, review_parsed)
+                item["status"] = ("UNVERIFIED" if decision == "BLOCK" else
+                                  "VIOLATION" if decision in ("DELETE", "EDIT") else "CLEAN")
+                item["action"] = decision
+                item["reviewConflict"] = bool(_flags(primary_parsed) & DELETE_FLAGS and
+                                              not (_flags(review_parsed) & DELETE_FLAGS))
+                item["review"] = {"violations": review_parsed.get("violations")}
             else:
                 item["status"] = "UNVERIFIED"
                 item["review"] = {"ok": review_record.get("ok"), "error": review_record.get("error")}
         else:
             item["status"] = "CLEAN"
+            item["action"] = "KEEP"
         summary["results"].append(item)
     summary["counts"] = {status: sum(1 for item in summary["results"] if item["status"] == status)
                          for status in ("CLEAN", "VIOLATION", "UNVERIFIED")}

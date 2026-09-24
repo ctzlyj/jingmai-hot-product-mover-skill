@@ -629,6 +629,18 @@ def materialize(source: dict[str, Any], output_root: Path, client: HttpClient) -
                 client.download(str(video["coverUrl"]), cover_destination)
             video["coverLocalPath"] = cover_relative.as_posix()
 
+    if source.get("sourcePlatform") == "taobao" and source.get("imageQualityGate") == "strict":
+        import shutil
+        snapshots = {}
+        for relative in dict.fromkeys([*main_paths, *detail_paths, *sku_image_by_url.values()]):
+            original = (Path("source-original") / relative).as_posix()
+            path = folder / original
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                shutil.copyfile(folder / relative, path)
+            snapshots[relative] = original
+        source["sourceImageSnapshot"] = snapshots
+
     source["mainImages"] = main_paths
     source["detailImages"] = detail_paths
     for variant in source["variants"]:

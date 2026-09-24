@@ -31,6 +31,7 @@ import jd_product_pipeline as pipeline  # noqa: E402
 import jdo_listing_mvp as cli  # noqa: E402
 from source_pricing import component_source_audit, component_source_plan  # noqa: E402
 import batch as ni_batch  # noqa: E402
+from image_quality_gate import file_evidence, validate_candidate_report  # noqa: E402
 
 ROOT: Path | None = None
 CONFIG: dict = {}
@@ -338,8 +339,30 @@ def build_candidate(item_id: str, product: dict, group: dict, codes: dict) -> tu
     }
     return candidate, evidence
 
+def image_quality_errors(candidate: dict) -> list[str]:
+    """Fail-closed source-paired visual gate before any new batch upload.
+
+    Batches already configured explicitly as legacy keep their previous behavior;
+    no image or network state is modified by this check.
+    """
+    mode = CONFIG.get("imageQualityGate", "strict")
+    if mode == "legacy":
+        return []
+    if mode != "strict":
+        return ["image-quality-mode-invalid"]
+    source_path = ROOT / "candidates" / str(candidate["sourceItemId"]) / "source-normalized.json"
+    report_path = ROOT / "reports" / "image-quality-acceptance.json"
+    try:
+        source = load(source_path)
+        first = file_evidence((source.get("mainImages") or [])[0]["file"])
+        report = load(report_path)
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return ["image-quality-report-or-source-first-missing"]
+    return validate_candidate_report(candidate, report, first)
+
+
 def static_validate(candidate: dict) -> list[str]:
-    errors: list[str] = []
+    errors: list[str] = image_quality_errors(candidate)
     if candidate["categoryId"] not in CATEGORY_RULES:
         errors.append("category-not-allowed")
     if not candidate["title"].startswith(candidate["keyword"] + " "):
@@ -386,6 +409,31 @@ def static_validate(candidate: dict) -> list[str]:
         if not Path(text).is_file():
             errors.append(f"detail-missing:{text}")
     return errors
+
+
+def recheck_existing(source_id: str | None = None) -> list[dict]:
+    """Revalidate edited candidates without rebuilding from the pre-deletion map.
+
+    This is local-only and never modifies candidate.json, uploads, or contacts
+    the store. Use after selecting/deleting detail pages and running the image
+    quality audit; rerunning prepare would reintroduce deleted pages.
+    """
+    folders = ([ROOT / "candidates" / source_id] if source_id else
+               sorted(path for path in (ROOT / "candidates").iterdir() if path.is_dir()))
+    results = []
+    for folder in folders:
+        candidate_path = folder / "candidate.json"
+        if not candidate_path.is_file():
+            results.append({"sourceItemId": folder.name, "status": "CANDIDATE_MISSING"})
+            continue
+        candidate = load(candidate_path)
+        errors = static_validate(candidate)
+        save(folder / "local-validation.json", {"ok": not errors, "errors": errors, "validatedAt": now()})
+        results.append({"sourceItemId": folder.name,
+                        "status": "LOCAL_VALIDATED" if not errors else "FAILED_LOCAL_VALIDATION",
+                        "errors": errors})
+    save(ROOT / "reports" / "candidate-recheck.json", {"checkedAt": now(), "results": results})
+    return results
 
 
 def prepare() -> None:
@@ -581,6 +629,9 @@ def validate_one(source_id: str, confirm: str) -> dict:
     local = load(destination / "local-validation.json")
     if not local.get("ok"):
         raise RuntimeError(f"本地校验未通过：{local.get('errors')}")
+    quality_errors = image_quality_errors(candidate)
+    if quality_errors:
+        raise RuntimeError(f"image quality gate failed: {quality_errors}")
     identity()
     matches = exact_remote_matches(candidate)
     if matches:
@@ -626,6 +677,9 @@ def publish_one(source_id: str, confirm: str) -> dict:
     state = load(state_path)
     if state.get("stage") != "JD_VALIDATED":
         raise RuntimeError(f"{source_id} 尚未通过京东校验：{state.get('stage')}")
+    quality_errors = image_quality_errors(candidate)
+    if quality_errors:
+        raise RuntimeError(f"image quality gate failed: {quality_errors}")
     identity()
     matches = exact_remote_matches(candidate)
     if matches:
@@ -863,7 +917,7 @@ def run_batch(confirm: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["prepare", "validate", "publish", "verify", "run"])
+    parser.add_argument("command", choices=["prepare", "recheck", "validate", "publish", "verify", "run"])
     parser.add_argument("--source-id")
     parser.add_argument("--confirm", default="")
     ni_batch.add_root_argument(parser)
@@ -871,6 +925,8 @@ def main() -> None:
     set_root(args.root)
     if args.command == "prepare":
         prepare()
+    elif args.command == "recheck":
+        print(json.dumps(recheck_existing(args.source_id), ensure_ascii=False, indent=2))
     elif args.command == "validate":
         print(json.dumps(validate_one(args.source_id, args.confirm), ensure_ascii=False, indent=2))
     elif args.command == "publish":

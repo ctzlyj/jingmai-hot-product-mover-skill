@@ -1,6 +1,6 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Independent compliance audit of final images using an LTS4AI vision chat model."""
-import argparse, base64, io, json, os, sys, time, threading, urllib.request, urllib.error
+import argparse, base64, io, json, os, sys, time, threading, urllib.request, urllib.error, hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import cv2, numpy as np
@@ -10,6 +10,7 @@ import batch as ni_batch  # noqa: E402
 
 ROOT = ni_batch.root_from_argv()
 API = "https://api.lts4ai.com/v1/chat/completions"
+PROMPT_VERSION = 2
 PRIMARY_MODEL = "gemini-2.5-flash-lite"  # tier-1: full-pass first screen
 REVIEW_MODEL = "gemini-2.5-flash"        # tier-2: review only flagged/unclear images
 
@@ -19,17 +20,13 @@ def needs_review(rec):
     parsed = rec.get("parsed")
     if not isinstance(parsed, dict): return True
     violations = parsed.get("violations")
-    if violations is None: return True
+    if not isinstance(violations, list) or not isinstance(parsed.get("flags"), list): return True
+    if any(parsed.get(k) is not True for k in ("legible", "layoutOk", "valuable")): return True
+    if parsed.get("uncertain") or parsed.get("flags"): return True
     return bool(violations)
 
 SYS = ("你是京东商品图片合规审核员。逐字读取图片上的所有可见文字与水印标记，然后只输出 JSON，不要解释。")
-USER = ("检查这张商品图。找出下列违规内容：品牌名/品牌Logo/商标、旗舰店/官方/专卖店/授权、电话手机号微信号二维码邮箱、"
-        "厂家直销/工厂直销/直供、德国/日本/进口/海外等产地进口词、淘宝/天猫/TMALL/拼多多/抖音/小红书等第三方平台信息、"
-        "其他店铺水印、极限词（最、第一、第一名、顶级、绝对、唯一、100%、除尽等）、"
-        "价格说明（原价/划线价/券后价/售价/标价/指导价/元/¥/折）、促销（秒杀/立减/优惠券/限时/包邮/国补/补贴/赠品）、"
-        "榜单排名（榜单/TOP/热卖/热销/销量/排行榜）。\n"
-        "输出 JSON：{\"violations\":[{\"term\":\"命中的违规词\",\"text\":\"该词所在的完整文字片段\"}],\"other_text\":\"图中其它主要文字\"}\n"
-        "没有任何违规时 violations 为空数组。")
+from image_quality_gate import SINGLE_PROMPT as USER, DELETE_FLAGS, _flags
 _lock = threading.Lock()
 
 def b64img(p, maxside=1400):
@@ -101,7 +98,11 @@ def main():
             line = line.strip()
             if line:
                 try:
-                    d = json.loads(line); done[d["path"]] = d
+                    d = json.loads(line)
+                    path = Path(d["path"])
+                    if (d.get("ok") and d.get("promptVersion") == PROMPT_VERSION
+                            and path.is_file() and d.get("sha256") == hashlib.sha256(path.read_bytes()).hexdigest()):
+                        done[d["path"]] = d
                 except Exception: pass
     todo = [p for p in paths if p not in done]
     print("total", len(paths), "todo", len(todo), flush=True)
@@ -110,13 +111,20 @@ def main():
     n = [0]
     def work(p):
         r = call(key, a.model, p, a.timeout)
-        rec = {"path": p, "model": a.model, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "escalated": False, **r}
+        digest = hashlib.sha256(Path(p).read_bytes()).hexdigest() if Path(p).is_file() else None
+        rec = {"path": p, "model": a.model, "promptVersion": PROMPT_VERSION, "sha256": digest,
+               "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "escalated": False, **r}
         if not a.no_review and needs_review(r):
             r2 = call(key, a.review_model, p, a.timeout)
             first = {"ok": r.get("ok"), "error": r.get("error"),
-                     "violations": ((r.get("parsed") or {}).get("violations"))}
-            rec = {"path": p, "model": a.review_model, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                     "violations": ((r.get("parsed") or {}).get("violations")),
+                     "flags": sorted(_flags(r.get("parsed")))}
+            rec = {"path": p, "model": a.review_model, "promptVersion": PROMPT_VERSION, "sha256": digest,
+                   "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                    "escalated": True, "firstPass": first, **r2}
+            if _flags(r.get("parsed")) & DELETE_FLAGS:
+                rec["reviewConflict"] = bool(r2.get("ok") and not (_flags(r2.get("parsed")) & DELETE_FLAGS))
+                rec["parsed"] = r.get("parsed")  # never erase patent/platform evidence
         with lock:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n"); f.flush()
             n[0] += 1

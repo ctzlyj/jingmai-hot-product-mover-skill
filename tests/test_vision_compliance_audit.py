@@ -12,6 +12,7 @@ from vision_compliance_audit import (
     build_parser,
     is_review_needed,
     load_done,
+    PROMPT_VERSION,
 )
 
 
@@ -36,23 +37,30 @@ class VisionComplianceAuditTests(unittest.TestCase):
         self.assertTrue(is_review_needed({"ok": False, "error": "HTTP 500"}))
         self.assertTrue(is_review_needed({"ok": True, "parsed": None}))
         self.assertTrue(is_review_needed({"ok": True, "parsed": {"violations": None}}))
-        self.assertFalse(is_review_needed({"ok": True, "parsed": {"violations": []}}))
+        self.assertFalse(is_review_needed({"ok": True, "parsed": {"violations": [], "flags": [], "legible": True, "layoutOk": True, "valuable": True}}))
+        self.assertTrue(is_review_needed({"ok": True, "parsed": {"violations": []}}))
+        self.assertTrue(is_review_needed({"ok": True, "parsed": {"violations": [], "flags": ["PATENT"], "legible": True, "layoutOk": True, "valuable": True}}))
 
     def test_json_extraction_tolerates_code_fences(self):
         parsed = _extract_json('```json\n{"violations": []}\n```')
         self.assertEqual(parsed, {"violations": []})
         self.assertIsNone(_extract_json("no json here"))
 
-    def test_resume_skips_only_successful_records(self):
-        import tempfile
+    def test_resume_invalidates_old_prompt_and_changed_image(self):
+        import tempfile, hashlib
         with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "a.png"; image.write_bytes(b"first")
             out = Path(tmp) / "primary.jsonl"
-            out.write_text(
-                json.dumps({"path": "a.png", "ok": True, "parsed": {"violations": []}}) + "\n" +
-                json.dumps({"path": "b.png", "ok": False, "error": "URLError"}) + "\n",
-                encoding="utf-8")
-            done = load_done(out)
-        self.assertEqual(sorted(done), ["a.png"])
+            digest = hashlib.sha256(image.read_bytes()).hexdigest()
+            rows = [
+                {"path": str(image), "ok": True, "parsed": {"violations": []}},
+                {"path": str(image), "ok": True, "promptVersion": PROMPT_VERSION,
+                 "sha256": digest, "parsed": {"violations": []}},
+            ]
+            out.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            self.assertIn(str(image), load_done(out))
+            image.write_bytes(b"changed")
+            self.assertEqual(load_done(out), {})
 
 
 if __name__ == "__main__":
