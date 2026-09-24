@@ -8,6 +8,8 @@
 - 案例：专利证书被重绘保留，文字乱码图被判干净，两张近重复详情各自被判干净，一张来源首图的正常文案被全删，另有信息页出现大面积空洞。来源和审核路径保存在任务批次证据中，不将店铺 ID、个人路径和素材搬进通用 Skill。
 - 本批已知五个缺陷的只读小样本双图测试，lite 与 flash 均识别 5/5；这不等于总体准确率。追加真实密集宣传首图测试：旧提示词下 lite 仅报 1 处、flash 报 6 处；新版明确要求标记密集违规后，flash 标记 `DENSE_VIOLATIONS`。该图的改版候选在无批次台账的临时淘宝草稿中被判 `BLOCK`；另一专利证书页被判 `DELETE`。旧候选还发现主图与详情图字节完全重复，新门禁已拦截。均为本地只读/临时草稿验证，不是线上全量修复。
 
+- 追加同源首图生图实测：三个不同模型候选中有候选抹去底部文案后留下整条无内容的深色横带，Lite 单图和双图均给干净，按人工疑点再用 Flash 双图复核仍将排版与无空洞判为通过。已在 `image_quality_gate.py` 增加只读来源/结果整条边缘信息塌缩检测：即使两档模型均通过，也强制 `BLOCK`；检测到的疑似项仍交 Flash 复核以留证。用该实测候选与合成正/反例回归验证；这是拦截漏检，不代表生图修复成功，候选未上传。`promptVersion=4` 使旧审核报告失效。
+
 - 整商品只读演练：一件已归档候选共 13 图（4 主图、8 详情、1 SKU 图），门禁返回 KEEP=4、BLOCK=3、DELETE=6；来源首图与候选首图字节一致，仍因承诺/功效宣传被 `BLOCK`。这证明“没有改图”不等于可发布，亦不代表该商品已经整改或线上通过。
 
 ## 路由与验收
@@ -15,7 +17,7 @@
 1. 按来源表“主图1”固定原图，建立**每一张拟用图**的 `role/source/final` 配对和文件哈希。主图第一槽 `main1` 必须来自该来源首图，不许使用别的场景图替代；合规处理只针对小块违规，未违规文案、排版、字体、构图、商品本体尽量保持一致。小面积违规请生图模型局部编辑（不能本地 PS 掩码），修后重验；未违规的主图不要删文案。
 2. `gemini-2.5-flash-lite` 对来源图（已修改时）和拟用图全量初筛：原图若本就是专利证书/平台专属/价格活动页，不能靠重绘把它伪装成有价值详情页，仍应直接删除。对拟用图全量初筛：专利图、淘金币、价格/活动说明、天猫明日达等平台专属图、品牌信息、公司介绍、源头工厂、纯低价值图直接 `DELETE`；违规过密非首图也 `DELETE`。**首图命中删除条件则 BLOCK 整件并准备同源可用修复方案**，不拿其它图顶首图。`flash` 只复核命中和看不清的图；lite/flash 有冲突不得直接改为干净。正常详情页若小范围违规才 `EDIT`。
 3. 对保留图做来源与结果双图比对：商品相同、违规点消除、正常文字与字体/布局保留、无乱码错字/裁断/留白空洞；任一失败 `BLOCK`。对整商品详情做哈希/近重复检查，详情与主图完全同图也视为重复并拦截，含可疑项不自动删，审定后从候选中剔除；已删项不计入待上架数量。若产生删除，保持保留页原有相对顺序及 SKU 归属，**不强制原图数量一致**。
-4. `scripts/ni/image_quality_gate.py` 输出按源图/结果图 SHA-256 绑定的 `reports/image-quality-acceptance.json`。`listing_batch.py prepare`、`validate`、`publish` 检查每张候选图的覆盖、源首图、配对结果、近重复与哈希；缺报告、提示词版本不符（当前 v3）、结果不合格或修改后报告过期均先拦截，不能因单图 `CLEAN` 放行。`imageQualityGate` 新批次默认 `strict`；只有此前已建立且明确注明历史兼容的批次才可显式标 `legacy`，不能给新链接关闭门禁。
+4. `scripts/ni/image_quality_gate.py` 输出按源图/结果图 SHA-256 绑定的 `reports/image-quality-acceptance.json`。`listing_batch.py prepare`、`validate`、`publish` 检查每张候选图的覆盖、源首图、配对结果、近重复与哈希；缺报告、提示词版本不符（当前 v4）、结果不合格或修改后报告过期均先拦截，不能因单图 `CLEAN` 放行。`imageQualityGate` 新批次默认 `strict`；只有此前已建立且明确注明历史兼容的批次才可显式标 `legacy`，不能给新链接关闭门禁。
 
 For a new strict Taobao draft, the reviewed image mapping and every selected media byte are bound to its uploaded-listing checkpoint. After upload and again after JD validation, a changed image, review, uploaded manifest, local listing, validation body, or publish body stops before product creation. An old upload checkpoint without a matching review snapshot is not evidence of the newly reviewed images; rebuild a fresh reviewed upload before continuing. The existing remote-product reconciliation path remains separate.
 

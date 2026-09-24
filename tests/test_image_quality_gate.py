@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts' / 'ni'))
-from image_quality_gate import decide, pair_accepted, duplicate_details, validate_candidate_report
+from image_quality_gate import decide, pair_accepted, duplicate_details, validate_candidate_report, PROMPT_VERSION
 
 class ImageQualityGateTests(unittest.TestCase):
     def test_patent_and_platform_pages_delete_even_if_flash_misses(self):
@@ -33,6 +33,41 @@ class ImageQualityGateTests(unittest.TestCase):
             self.assertFalse(pair_accepted('main1',broken),key)
         self.assertFalse(pair_accepted('detail', dict(good,textLegible=False)))
         self.assertFalse(pair_accepted('detail', {'productSame':True,'violationsCleared':True,'noNewArtifacts':True,'qualityOk':True}))
+
+    def test_large_source_band_collapsing_is_blocked_even_if_both_models_pass(self):
+        from PIL import Image, ImageDraw
+        import tempfile, types
+        from unittest import mock
+        from image_quality_gate import audit, collapsed_source_bands
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);source=root/'source.png';final=root/'final.png'
+            original=Image.new('RGB',(256,256),'#003317')
+            pen=ImageDraw.Draw(original)
+            for x in range(4,256,8):
+                pen.rectangle((x,226,x+3,250),fill='white')
+            original.save(source)
+            Image.new('RGB',(256,256),'#003317').save(final)
+            self.assertEqual(collapsed_source_bands(source,final),[7])
+            self.assertEqual(collapsed_source_bands(source,source),[])
+            clean={'flags':[],'violations':[],'legible':True,'layoutOk':True,'valuable':True,'uncertain':False}
+            verdict={k:True for k in ('productSame','violationsCleared','noNewArtifacts','qualityOk',
+                        'layoutPreserved','safeTextPreserved','textLegible','noHoles','sourceFirstMatched')}
+            pairs=[]
+            def compare(*args):
+                pairs.append(args[-1]);return verdict
+            scanner=types.SimpleNamespace(call=lambda *args:{'ok':True,'parsed':clean},
+                      PRIMARY_MODEL='gemini-2.5-flash-lite',REVIEW_MODEL='gemini-2.5-flash',needs_review=lambda _:False)
+            model=types.SimpleNamespace(load_key=lambda:'fake-key',call=compare,
+                    PRIMARY_MODEL='gemini-2.5-flash-lite',REVIEW_MODEL='gemini-2.5-flash')
+            manifest={'items':{'123':{'sourceFirst':'source.png','images':[
+                {'role':'main1','source':'source.png','final':'final.png'}]}}}
+            with mock.patch.dict(sys.modules,{'oxygen_verify':model,'vision_audit':scanner}):
+                row=audit(manifest,root)['items']['123']['images'][0]
+            self.assertEqual(pairs,['gemini-2.5-flash-lite','gemini-2.5-flash'])
+            self.assertEqual(row['decision'],'BLOCK')
+            self.assertFalse(row['pairAccepted'])
+            self.assertEqual(row['collapsedSourceBands'],[7])
+            self.assertEqual(row['issues'],['large-source-content-loss'])
 
     def test_near_duplicate_details_block(self):
         from PIL import Image
@@ -152,7 +187,7 @@ class ImageQualityGateTests(unittest.TestCase):
             for image in manifest['items']['ITEM']['images']:
                 rows.append({'role':image['role'],'source':file_evidence(folder/image['source']),
                              'final':file_evidence(folder/image['final']),'decision':'KEEP','pairAccepted':True})
-            report={'promptVersion':3,'items':{'ITEM':{'sourceFirst':file_evidence(folder/'original/first.png'),'images':rows}}}
+            report={'promptVersion':PROMPT_VERSION,'items':{'ITEM':{'sourceFirst':file_evidence(folder/'original/first.png'),'images':rows}}}
             (folder/'image-quality-acceptance.json').write_text(json.dumps(report),encoding='utf-8')
             enforce_taobao_quality(folder,source,listing)
             from publish_local_draft import taobao_quality_stamp, require_reviewed_upload
@@ -248,7 +283,7 @@ class ImageQualityGateTests(unittest.TestCase):
             records=[{'role':role,'source':file_evidence(path),'final':file_evidence(path),
                       'decision':'KEEP','pairAccepted':True} for role,path in
                      [('main1',first),('detail',a),('detail',b)]]
-            report={'promptVersion':3,'items':{'x':{'sourceFirst':file_evidence(first),'images':records}}}
+            report={'promptVersion':PROMPT_VERSION,'items':{'x':{'sourceFirst':file_evidence(first),'images':records}}}
             candidate={'sourceItemId':'x','mainImages':[str(first)],'detailImages':[str(b),str(a)],'skus':[]}
             self.assertIn('image-quality-order-mismatch',validate_candidate_report(candidate,report,file_evidence(first)))
     def test_report_requires_current_files_and_source_first(self):
@@ -261,7 +296,7 @@ class ImageQualityGateTests(unittest.TestCase):
                 image=Image.new('RGB',(64,64),('white','gray','black')[i]); ImageDraw.Draw(image).rectangle((i*4,8,25+i*4,40),fill='red'); image.save(path)
             record=lambda path: {'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
             candidate={'sourceItemId':'123','mainImages':[str(final)],'detailImages':[str(detail)],'skus':[]}
-            report={'promptVersion':3,'items':{'123':{'sourceFirst':record(original), 'images':[
+            report={'promptVersion':PROMPT_VERSION,'items':{'123':{'sourceFirst':record(original), 'images':[
                 {'role':'main1','source':record(original),'final':record(final),'decision':'KEEP','pairAccepted':True},
                 {'role':'detail','source':record(detail),'final':record(detail),'decision':'KEEP','pairAccepted':True}]}}}
             self.assertEqual(validate_candidate_report(candidate,report,record(original)),[])
@@ -289,7 +324,7 @@ class ImageQualityGateTests(unittest.TestCase):
                 {'role':'main1','source':'source.png','final':'edited.png'}]}}}
             with mock.patch.dict(sys.modules,{'vision_audit':scanner,'oxygen_verify':pair}):
                 report=audit(manifest,root)
-            self.assertEqual(report['promptVersion'],3)
+            self.assertEqual(report['promptVersion'],PROMPT_VERSION)
             self.assertEqual(report['items']['one']['images'][0]['decision'],'BLOCK')
 
     def test_report_version_and_identical_detail_main_block(self):
@@ -305,9 +340,9 @@ class ImageQualityGateTests(unittest.TestCase):
             candidate={'sourceItemId':'x','mainImages':[str(first)],'detailImages':[str(same)],'skus':[]}
             rows=[{'role':role,'source':file_evidence(p),'final':file_evidence(p),'decision':'KEEP','pairAccepted':True}
                   for role,p in [('main1',first),('detail',same)]]
-            report={'promptVersion':3,'items':{'x':{'sourceFirst':file_evidence(first),'images':rows}}}
+            report={'promptVersion':PROMPT_VERSION,'items':{'x':{'sourceFirst':file_evidence(first),'images':rows}}}
             self.assertIn('detail-duplicates-main:'+str(same),validate_candidate_report(candidate,report,file_evidence(first)))
-            old=dict(report,promptVersion=2)
+            old=dict(report,promptVersion=PROMPT_VERSION-1)
             self.assertIn('image-quality-report-version-mismatch',validate_candidate_report(candidate,old,file_evidence(first)))
 
     def test_prompt_classifies_dense_violations_on_first_image_too(self):

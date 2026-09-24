@@ -12,7 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 
-PROMPT_VERSION = 3
+PROMPT_VERSION = 4
 
 DELETE_FLAGS = frozenset({
     "PATENT", "TAOJINBI", "PRICE_EXPLANATION", "PLATFORM_DELIVERY",
@@ -63,6 +63,27 @@ def pair_accepted(role, verdict):
     if not isinstance(verdict, dict) or not all(verdict.get(k) is True for k in PAIR_KEYS):
         return False
     return role != "main1" or verdict.get("sourceFirstMatched") is True
+
+
+def collapsed_source_bands(source, final):
+    """Conservatively flag whole horizontal bands whose source content vanished.
+
+    This read-only pixel check is a blocker, never a reason to approve edits or
+    delete an image. It catches edited title/footer bands missed by both VLMs.
+    """
+    from PIL import Image, ImageFilter
+    coverages = []
+    for path in (source, final):
+        with Image.open(path) as image:
+            edges = image.convert("L").resize((256, 256), Image.Resampling.LANCZOS).filter(ImageFilter.FIND_EDGES)
+        values = []
+        for band in range(8):
+            crop = edges.crop((1, band * 32 + 1, 255, (band + 1) * 32 - 1))
+            hist = crop.histogram()
+            values.append(sum(hist[48:]) / sum(hist))
+        coverages.append(values)
+    before, after = coverages
+    return [band for band in range(8) if before[band] >= 0.12 and after[band] <= 0.025]
 
 
 def _dhash(path):
@@ -272,14 +293,19 @@ def audit(manifest, root):
                 if decision == "KEEP":
                     first = pair_model.call(key, source["path"], final["path"], PAIR_PROMPT,
                                             pair_model.PRIMARY_MODEL)
-                    if pair_accepted(role, first):
+                    collapsed = (collapsed_source_bands(source["path"], final["path"])
+                                 if source["sha256"] != final["sha256"] else [])
+                    if pair_accepted(role, first) and not collapsed:
                         row["pairAccepted"] = True
                     else:
                         second = pair_model.call(key, source["path"], final["path"], PAIR_PROMPT,
                                                  pair_model.REVIEW_MODEL)
-                        row["pairAccepted"] = pair_accepted(role, first) and pair_accepted(role, second)
-                        row["decision"] = "BLOCK"  # conflicting judgments are not safe to auto-upload
+                        row["pairAccepted"] = False  # a suspected lost band is never cleared by a model PASS
+                        row["decision"] = "BLOCK"  # conflicts and large content loss cannot auto-upload
                         row["reviewIssues"] = (second or {}).get("issues", [])[:8]
+                        if collapsed:
+                            row["collapsedSourceBands"] = collapsed
+                            row["issues"] = ["large-source-content-loss"]
                 elif decision == "EDIT":
                     row["issues"] = ["局部违规需修复并重新验收"]
             except Exception as error:
