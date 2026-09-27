@@ -21,6 +21,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 ## 执行路由
 
+- 用户按「京东爆款复刻模式」提供卖得好的京东链接并要求高级重制上架时，先读 `references/jd-hot-replica-mode.md`：采集后主图/详情页一律用生图模型高级重制（商品本体不变），详情页按 image-studio 爆款复刻方法切片生成后拼接；门禁与发布前定价基准按该模式执行，不做保真搬运式排版比对。旧无货源模式已删除，不再引用其脚本与文件。
 - 全店盘点、查重或发布后审计读取商品列表时，使用 `scripts/jd_product_pipeline.py:list_products` 的稳定排序和分页完整性检查；最终 SKU 必须来自逐商品详情。适用条件、失败回归和非破坏式更新见 `references/product-pagination.md`。
 - 京东公开源视频优先原HTTP接口；确需浏览器补采时调用已安装路由器的 Playwright CLI，无界面独立会话按目标视频ID等待响应，不临时 `npx` 下载、固定休眠或借用工作标签。登录/验证拦截和清理结果不明不换工具盲试；见 `references/browser-source-routing.md`。
 
