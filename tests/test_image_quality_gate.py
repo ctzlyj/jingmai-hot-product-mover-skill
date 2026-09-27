@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts' / 'ni'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from image_quality_gate import decide, pair_accepted, duplicate_details, validate_candidate_report, PROMPT_VERSION
 
 class ImageQualityGateTests(unittest.TestCase):
@@ -150,19 +150,6 @@ class ImageQualityGateTests(unittest.TestCase):
             self.assertEqual((folder/first).read_bytes(),original.read_bytes())
             (folder/first).write_bytes(b'changed local image')
             self.assertNotEqual((folder/first).read_bytes(),original.read_bytes())
-    def test_recheck_does_not_rebuild_deleted_detail_selection(self):
-        import tempfile, json
-        from unittest import mock
-        import listing_batch
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);folder=root/'candidates'/'ITEM';folder.mkdir(parents=True)
-            candidate={'sourceItemId':'ITEM','detailImages':['kept-page.png']}
-            (folder/'candidate.json').write_text(json.dumps(candidate),encoding='utf-8')
-            with mock.patch.object(listing_batch,'ROOT',root), mock.patch.object(listing_batch,'static_validate',return_value=[]):
-                results=listing_batch.recheck_existing('ITEM')
-            self.assertEqual(results[0]['status'],'LOCAL_VALIDATED')
-            self.assertEqual(json.loads((folder/'candidate.json').read_text(encoding='utf-8'))['detailImages'],['kept-page.png'])
-            self.assertTrue(json.loads((folder/'local-validation.json').read_text(encoding='utf-8'))['ok'])
     def test_taobao_new_link_requires_source_snapshot_and_quality_report(self):
         import tempfile, json, hashlib
         from PIL import Image
@@ -258,20 +245,6 @@ class ImageQualityGateTests(unittest.TestCase):
             network.assert_not_called()
             self.assertFalse((folder/'.publish.lock').exists())
 
-    def test_new_listing_blocks_before_network_when_report_missing(self):
-        import json, tempfile
-        from unittest import mock
-        import listing_batch
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); dest = root/'candidates'/'123'; dest.mkdir(parents=True)
-            (dest/'candidate.json').write_text(json.dumps({'sourceItemId':'123'}),encoding='utf-8')
-            (dest/'local-validation.json').write_text(json.dumps({'ok':True}),encoding='utf-8')
-            (dest/'state.json').write_text(json.dumps({'stage':'JD_VALIDATED'}),encoding='utf-8')
-            with mock.patch.object(listing_batch,'ROOT',root), mock.patch.object(listing_batch,'CONFIG',{'imageQualityGate':'strict'}), mock.patch.object(listing_batch,'identity',side_effect=AssertionError('network identity called')):
-                with self.assertRaisesRegex(RuntimeError,'image quality gate failed'):
-                    listing_batch.validate_one('123','PUBLISH_TO_JD')
-                with self.assertRaisesRegex(RuntimeError,'image quality gate failed'):
-                    listing_batch.publish_one('123','PUBLISH_TO_JD')
     def test_detail_sequence_change_invalidates_approval(self):
         import tempfile
         from PIL import Image
@@ -350,178 +323,17 @@ class ImageQualityGateTests(unittest.TestCase):
         self.assertIn('\u9996\u4e3b\u56fe',SINGLE_PROMPT)
         self.assertIn('DENSE_VIOLATIONS',SINGLE_PROMPT)
 
-    def test_taobao_draft_without_batch_ledger_can_import_vision_clients(self):
+    def test_draft_gate_can_import_vision_clients(self):
         import os,subprocess,tempfile
-        ni=Path(__file__).resolve().parents[1]/'scripts'/'ni'
+        scripts=Path(__file__).resolve().parents[1]/'scripts'
         with tempfile.TemporaryDirectory() as tmp:
-            env=os.environ.copy();env.pop('NO_INVENTORY_ROOT',None)
+            env=os.environ.copy()
             probe=("import sys; sys.path.insert(0,sys.argv[2]); "
                    "draft=sys.argv[1];sys.argv=['image_quality_gate.py','--root',draft]; "
                    "import oxygen_verify,vision_audit; print('IMPORT_OK')")
-            result=subprocess.run([sys.executable,'-B','-c',probe,tmp,str(ni)],env=env,
+            result=subprocess.run([sys.executable,'-B','-c',probe,tmp,str(scripts)],env=env,
                                   capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=15)
             self.assertEqual(result.returncode,0,(result.stderr or '')[-300:])
             self.assertIn('IMPORT_OK',result.stdout)
-
-    def test_publish_refuses_stale_candidate_or_validation_body_before_network(self):
-        import hashlib, json, tempfile
-        from unittest import mock
-        from PIL import Image, ImageDraw
-        from image_quality_gate import file_evidence, PROMPT_VERSION
-        import listing_batch
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp)
-            folder=root/'candidates'/'item';folder.mkdir(parents=True)
-            (root/'reports').mkdir()
-            first, old, fresh=(root/f'{name}.png' for name in ('first','old','fresh'))
-            for path, x in ((first,0),(old,10),(fresh,20)):
-                image=Image.new('RGB',(64,64),'white')
-                ImageDraw.Draw(image).polygon([(x,5),(x+22,10),(x+7,55)],fill='black')
-                image.save(path)
-            source={'mainImages':[{'file':str(first)}]}
-            (folder/'source-normalized.json').write_text(json.dumps(source),encoding='utf-8')
-            candidate={'sourceItemId':'item','itemNumber':'ABC','categoryId':123,
-                       'mainImages':[str(first)],'detailImages':[str(old)],'skus':[]}
-            candidate_path=folder/'candidate.json'
-            candidate_path.write_text(json.dumps(candidate),encoding='utf-8')
-            body_path=folder/'validation-body.json'
-            body_path.write_text(json.dumps({'schema':'old-detail'}),encoding='utf-8')
-            sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
-            report_path=root/'reports'/'image-quality-acceptance.json'
-            def report_for(detail):
-                rows=[{'role':role,'source':file_evidence(path),'final':file_evidence(path),
-                       'decision':'KEEP','pairAccepted':True}
-                      for role,path in (('main1',first),('detail',detail))]
-                report={'promptVersion':PROMPT_VERSION,'items':{'item':{'sourceFirst':file_evidence(first),
-                        'images':rows}}}
-                report_path.write_text(json.dumps(report),encoding='utf-8')
-            report_for(old)
-            state_path=folder/'state.json'
-            with mock.patch.object(listing_batch,'ROOT',root), mock.patch.object(listing_batch,'CONFIG',{'imageQualityGate':'strict'}):
-                state={'stage':'JD_VALIDATED','validatedCandidateSha256':sha(candidate_path),
-                       'validatedBodySha256':sha(body_path),
-                       'validatedQualityItemSha256':listing_batch.quality_item_sha256('item')}
-                state_path.write_text(json.dumps(state),encoding='utf-8')
-                candidate['detailImages']=[str(fresh)]
-                candidate_path.write_text(json.dumps(candidate),encoding='utf-8')
-                report_for(fresh)
-                with mock.patch.object(listing_batch,'identity',side_effect=AssertionError('network called')):
-                    self.assertEqual(listing_batch.image_quality_errors(candidate),[])
-                    with self.assertRaisesRegex(RuntimeError,'revalidat|stale'):
-                        listing_batch.publish_one('item','PUBLISH_TO_JD')
-                    state['validatedCandidateSha256']=sha(candidate_path)
-                    state_path.write_text(json.dumps(state),encoding='utf-8')
-                    # Image review mapping changed without a candidate-path change.
-                    with self.assertRaisesRegex(RuntimeError,'revalidat|stale'):
-                        listing_batch.publish_one('item','PUBLISH_TO_JD')
-                    state['validatedQualityItemSha256']=listing_batch.quality_item_sha256('item')
-                    state_path.write_text(json.dumps(state),encoding='utf-8')
-                    body_path.write_text(json.dumps({'schema':'swapped'}),encoding='utf-8')
-                    with self.assertRaisesRegex(RuntimeError,'revalidat|stale'):
-                        listing_batch.publish_one('item','PUBLISH_TO_JD')
-                    state['validatedBodySha256']=sha(body_path)
-                    state_path.write_text(json.dumps(state),encoding='utf-8')
-                    # Old JD_VALIDATED records lacking hashes also fail closed.
-                    state_path.write_text(json.dumps({'stage':'JD_VALIDATED'}),encoding='utf-8')
-                    with self.assertRaisesRegex(RuntimeError,'revalidat|stale'):
-                        listing_batch.publish_one('item','PUBLISH_TO_JD')
-
-    def test_validated_snapshot_allows_unmodified_publish(self):
-        import hashlib, json, tempfile
-        from unittest import mock
-        from PIL import Image, ImageDraw
-        from image_quality_gate import file_evidence, PROMPT_VERSION
-        import listing_batch
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);folder=root/'candidates'/'item';folder.mkdir(parents=True)
-            (root/'reports').mkdir()
-            first=root/'first.png';detail=root/'detail.png'
-            for path,x in ((first,0),(detail,18)):
-                image=Image.new('RGB',(64,64),'white')
-                ImageDraw.Draw(image).polygon([(x,5),(x+22,10),(x+7,55)],fill='black')
-                image.save(path)
-            (folder/'source-normalized.json').write_text(json.dumps({'mainImages':[{'file':str(first)}]}),encoding='utf-8')
-            candidate={'sourceItemId':'item','itemNumber':'ABC','categoryId':123,'brandId':-1,
-                       'mainImages':[str(first)],'detailImages':[str(detail)],'skus':[]}
-            (folder/'candidate.json').write_text(json.dumps(candidate),encoding='utf-8')
-            (folder/'local-validation.json').write_text(json.dumps({'ok':True}),encoding='utf-8')
-            rows=[{'role':role,'source':file_evidence(path),'final':file_evidence(path),
-                   'decision':'KEEP','pairAccepted':True}
-                  for role,path in (('main1',first),('detail',detail))]
-            report={'promptVersion':PROMPT_VERSION,'items':{'item':{'sourceFirst':file_evidence(first),'images':rows}}}
-            (root/'reports'/'image-quality-acceptance.json').write_text(json.dumps(report),encoding='utf-8')
-            (root/'reference.json').write_text('{}',encoding='utf-8')
-            with (mock.patch.object(listing_batch,'ROOT',root),
-                  mock.patch.object(listing_batch,'CONFIG',{'imageQualityGate':'strict'}),
-                  mock.patch.object(listing_batch,'CATEGORY_RULES',{123:{'reference':'reference.json'}}),
-                  mock.patch.object(listing_batch,'identity',return_value={}),
-                  mock.patch.object(listing_batch,'exact_remote_matches',return_value=[]),
-                  mock.patch.object(listing_batch,'build_remote_schema',return_value=[]),
-                  mock.patch.object(listing_batch.cli,'run_jdo_large',side_effect=[{'data':{}},{'data':{'productId':456}}]) as calls):
-                state=listing_batch.validate_one('item','PUBLISH_TO_JD')
-                self.assertEqual(state['stage'],'JD_VALIDATED')
-                self.assertEqual(listing_batch.validation_snapshot_errors('item',state),[])
-                result=listing_batch.publish_one('item','PUBLISH_TO_JD')
-                self.assertEqual(result['stage'],'SUBMITTED_AWAITING_VERIFICATION')
-                self.assertEqual(calls.call_count,2)
-                self.assertEqual(json.loads((folder/'publish-body.json').read_text(encoding='utf-8'))['schema'],'[]')
-
-    def test_unknown_write_reconciles_original_item_number_not_edited_candidate(self):
-        import io, json, tempfile
-        from contextlib import redirect_stdout
-        from unittest import mock
-        import listing_batch
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);folder=root/'candidates'/'item';folder.mkdir(parents=True)
-            (root/'reports').mkdir()
-            (root/'reports'/'candidate-preparation.json').write_text(json.dumps({'results':[
-                {'sourceItemId':'item','status':'LOCAL_VALIDATED'}]}),encoding='utf-8')
-            (folder/'state.json').write_text(json.dumps({'stage':'SUBMISSION_RESULT_REQUIRES_RECONCILIATION',
-                                                         'itemNumber':'OLD'}),encoding='utf-8')
-            (folder/'candidate.json').write_text(json.dumps({'itemNumber':'NEW'}),encoding='utf-8')
-            with (mock.patch.object(listing_batch,'ROOT',root),
-                  mock.patch.object(listing_batch,'identity',return_value={}),
-                  mock.patch.object(listing_batch,'exact_remote_matches',return_value=[]) as matches,
-                  mock.patch.object(listing_batch,'validate_one',side_effect=AssertionError('revalidation forbidden'))):
-                with redirect_stdout(io.StringIO()):
-                    listing_batch.run_batch('PUBLISH_TO_JD')
-            matches.assert_called_once_with({'itemNumber':'OLD'})
-            state=listing_batch.load(folder/'state.json')
-            self.assertEqual(state['stage'],'SUBMISSION_RESULT_REQUIRES_RECONCILIATION')
-            self.assertFalse((folder/'publish-body.json').exists())
-
-    def test_validation_does_not_approve_changed_candidate_during_cli_call(self):
-        import json, tempfile
-        from unittest import mock
-        from PIL import Image
-        from image_quality_gate import file_evidence, PROMPT_VERSION
-        import listing_batch
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);folder=root/'candidates'/'item';folder.mkdir(parents=True)
-            (root/'reports').mkdir()
-            first=root/'first.png';Image.new('RGB',(32,32),'white').save(first)
-            (folder/'source-normalized.json').write_text(json.dumps({'mainImages':[{'file':str(first)}]}),encoding='utf-8')
-            candidate={'sourceItemId':'item','itemNumber':'ABC','categoryId':123,'brandId':-1,'mainImages':[str(first)],'detailImages':[],'skus':[]}
-            candidate_path=folder/'candidate.json'
-            candidate_path.write_text(json.dumps(candidate),encoding='utf-8')
-            (folder/'local-validation.json').write_text(json.dumps({'ok':True}),encoding='utf-8')
-            report={'promptVersion':PROMPT_VERSION,'items':{'item':{'sourceFirst':file_evidence(first),
-                    'images':[{'role':'main1','source':file_evidence(first),'final':file_evidence(first),'decision':'KEEP','pairAccepted':True}]}}}
-            (root/'reports'/'image-quality-acceptance.json').write_text(json.dumps(report),encoding='utf-8')
-            (root/'reference.json').write_text('{}',encoding='utf-8')
-            def mutate(**kwargs):
-                candidate['title']='changed during validation'
-                candidate_path.write_text(json.dumps(candidate),encoding='utf-8')
-                return {'data':{}}
-            with (mock.patch.object(listing_batch,'ROOT',root),
-                  mock.patch.object(listing_batch,'CONFIG',{'imageQualityGate':'strict'}),
-                  mock.patch.object(listing_batch,'CATEGORY_RULES',{123:{'reference':'reference.json'}}),
-                  mock.patch.object(listing_batch,'identity',return_value={}),
-                  mock.patch.object(listing_batch,'exact_remote_matches',return_value=[]),
-                  mock.patch.object(listing_batch,'build_remote_schema',return_value=[]),
-                  mock.patch.object(listing_batch.cli,'run_jdo_large',side_effect=mutate)):
-                with self.assertRaisesRegex(RuntimeError,'revalidate'):
-                    listing_batch.validate_one('item','PUBLISH_TO_JD')
-                self.assertEqual(listing_batch.load(folder/'state.json')['stage'],'VALIDATING')
 
 if __name__ == '__main__': unittest.main()

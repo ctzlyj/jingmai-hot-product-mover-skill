@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fail-closed, source-paired image selection for no-inventory listings.
+"""Fail-closed, source-paired image selection for listing drafts.
 
 CLI consumes a source/selected-image manifest and writes a hash-bound approval
 report. It never edits images, uploads, or calls a Jingmai write API. Missing

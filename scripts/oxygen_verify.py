@@ -7,7 +7,6 @@ from pathlib import Path
 import cv2, numpy as np
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import batch as ni_batch  # noqa: E402
 
 API = "https://api.lts4ai.com/v1/chat/completions"
 HELPER = str(Path.home() / ".joycode" / "skills" / "sufy-image2" / "scripts" / "read_dpapi_credential.ps1")
@@ -95,7 +94,7 @@ def call(key,p1,p2,user_prompt,model=PRIMARY_MODEL):
     return json.loads(m.group(0)) if m else {"parseFail":True,"raw":str(txt)[:200]}
 def main():
     ap=argparse.ArgumentParser()
-    ni_batch.add_root_argument(ap)
+    ap.add_argument("--root", required=True, help="工作根目录（含 reports/ 与 images/）")
     ap.add_argument("--out", required=True)
     ap.add_argument("--dir", default="image-edits-oxygen")
     ap.add_argument("--concurrency", type=int, default=10)
@@ -104,7 +103,7 @@ def main():
     ap.add_argument("--review-model", default=REVIEW_MODEL)
     ap.add_argument("--no-review", action="store_true", help="skip tier-2 flash review of failed/unclear verdicts")
     a=ap.parse_args()
-    ROOT = ni_batch.resolve_root(a.root)
+    ROOT = Path(a.root).expanduser().resolve()
     key=load_key()
     plan=json.loads((ROOT/"reports"/"regen-plan.json").read_text(encoding="utf-8"))
     meta={}

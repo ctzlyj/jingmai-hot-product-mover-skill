@@ -16,7 +16,7 @@ from typing import Any
 import jd_product_mover as mover
 import jd_product_pipeline as pipeline
 import jdo_listing_mvp as jingmai
-from ni.image_quality_gate import create_manifest_from_listing, file_evidence, validate_candidate_report
+from image_quality_gate import create_manifest_from_listing, file_evidence, validate_candidate_report
 
 
 ROOT = Path(__file__).resolve().parents[1]

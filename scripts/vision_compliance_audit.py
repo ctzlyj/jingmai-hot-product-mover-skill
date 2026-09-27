@@ -20,13 +20,13 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from ni.image_quality_gate import PROMPT_VERSION
+from image_quality_gate import PROMPT_VERSION
 DEFAULT_PRIMARY_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_REVIEW_MODEL = "gemini-2.5-flash"
 API = "https://api.lts4ai.com/v1/chat/completions"
 
 SYS_PROMPT = ("你是京东商品图片合规审核员。逐字读取图片上的所有可见文字与水印标记，然后只输出 JSON，不要解释。")
-from ni.image_quality_gate import SINGLE_PROMPT as USER_PROMPT, DELETE_FLAGS, _flags, decide
+from image_quality_gate import SINGLE_PROMPT as USER_PROMPT, DELETE_FLAGS, _flags, decide
 
 
 def encode_image(path, max_side=1400, jpeg_quality=82):
