@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "category": {
+    "id": 53188,
+    "name": "泡澡桶/盆",
+    "sourceId": 53151
+  },
+  "productDefaults": {
+    "brandId": -1,
+    "brandName": "无品牌",
+    "model": "折叠款",
+    "sevenDayReturnCode": "1",
+    "sevenDayReturnLabel": "支持7天无理由退货",
+    "freightTemplateId": 1119941784,
+    "freightTemplateLabel": "千百日用品质店店运费模板",
+    "mainImageMode": "single_set",
+    "stock": 10000
+  },
+  "categoryAttributes": [
+    {
+      "componentCode": "prop-product-426401",
+      "attrName": "主体材质",
+      "inputType": "singleSelect",
+      "required": true,
+      "valueIds": [
+        "4267611"
+      ],
+      "valueLabels": [
+        "塑料"
+      ],
+      "note": "详情图17佐证折叠层为TPE软胶、框架为PP硬塑，均属塑料；非牛津布"
+    },
+    {
+      "componentCode": "prop-product-426378",
+      "attrName": "类型",
+      "inputType": "singleSelect",
+      "required": true,
+      "valueIds": [
+        "4267803"
+      ],
+      "valueLabels": [
+        "折叠泡澡桶"
+      ]
+    },
+    {
+      "componentCode": "prop-product-426363",
+      "attrName": "适用人群",
+      "inputType": "singleSelect",
+      "required": true,
+      "valueIds": [
+        "4267765"
+      ],
+      "valueLabels": [
+        "成人"
+      ]
+    }
+  ],
+  "skuAttributes": {},
+  "vendorSku": {
+    "defaultStart": 10000,
+    "prefixRules": [
+      {
+        "keywords": [
+          "折叠",
+          "泡澡",
+          "浴桶"
+        ],
+        "prefix": "PZP"
+      }
+    ],
+    "defaultPrefix": "PZP"
+  },
+  "pricing": {
+    "strategy": "reverse_from_source_price",
+    "sourcePriceMeaning": "源商品当前逐SKU价格",
+    "targetArrivalPriceMeaning": "源商品当前逐SKU价格减去belowCompetitor",
+    "belowCompetitor": "0.10",
+    "nationalSubsidyRate": "0.15",
+    "activityDiscountRate": "0.15",
+    "coupon": "0",
+    "discountExecution": "merchant_batch_enrollment_after_publish",
+    "requiresPostPromotionVerification": false
+  }
+}

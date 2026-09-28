@@ -512,11 +512,12 @@ def multi_set_manifest_errors(manifest: dict[str, Any]) -> list[str]:
         identity = str(upload.get("imgUrl") or image.get("localPath") or "").strip()
         if style_alias and identity:
             first_images_by_style.setdefault(style_alias, set()).add(identity)
-    for style_alias, identities in first_images_by_style.items():
-        if len(identities) > 1:
-            errors.append(
-                f"同一款式的不同尺寸必须共用同一套主图：{style_alias} 检测到{len(identities)}张不同首图"
-            )
+    if str(product.get("mainImageMode") or "single_set") == "multi_set":
+        for style_alias, identities in first_images_by_style.items():
+            if len(identities) > 1:
+                errors.append(
+                    f"同一款式的不同尺寸必须共用同一套主图：{style_alias} 检测到{len(identities)}张不同首图"
+                )
     return errors
 
 

@@ -336,4 +336,76 @@ class ImageQualityGateTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,(result.stderr or '')[-300:])
             self.assertIn('IMPORT_OK',result.stdout)
 
+    def test_remake_pair_accepts_redesigned_layout_but_requires_core_keys(self):
+        from image_quality_gate import REMAKE_PAIR_KEYS, REMAKE_PAIR_PROMPT, REMAKE_PROMPT_VERSION, pair_accepted
+        good = {key: True for key in REMAKE_PAIR_KEYS}
+        self.assertTrue(pair_accepted('main1', good, 'remake'))
+        self.assertTrue(pair_accepted('detail', good, 'remake'))
+        for key in REMAKE_PAIR_KEYS:
+            self.assertFalse(pair_accepted('main1', dict(good, **{key: False}), 'remake'), key)
+        self.assertNotEqual(REMAKE_PROMPT_VERSION, PROMPT_VERSION)
+        for word in ('layoutClean', '商品本体严格一致', '排版必须正常美观', '违规点在第2张必须全部清除'):
+            self.assertIn(word, REMAKE_PAIR_PROMPT)
+
+    def test_remake_audit_uses_remake_prompt_and_skips_fidelity_band_detector(self):
+        import sys, tempfile, types
+        from unittest import mock
+        from image_quality_gate import REMAKE_PAIR_KEYS, REMAKE_PAIR_PROMPT, REMAKE_PROMPT_VERSION, audit
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from PIL import Image, ImageDraw
+            original = Image.new('RGB', (256, 256), '#003317')
+            pen = ImageDraw.Draw(original)
+            for x in range(4, 256, 8):
+                pen.rectangle((x, 226, x + 3, 250), fill='white')
+            original.save(root / 'source.png')
+            Image.new('RGB', (256, 256), '#7a1f3d').save(root / 'remade.png')
+            clean = {'flags': [], 'violations': [], 'legible': True, 'layoutOk': True,
+                     'valuable': True, 'uncertain': False}
+            verdict = {key: True for key in REMAKE_PAIR_KEYS}
+            prompts = []
+            def compare(key, source_path, final_path, prompt, model):
+                prompts.append(prompt)
+                return verdict
+            scanner = types.SimpleNamespace(call=lambda *args: {'ok': True, 'parsed': clean},
+                        PRIMARY_MODEL='gemini-2.5-flash-lite', REVIEW_MODEL='gemini-2.5-flash',
+                        needs_review=lambda _: False)
+            model = types.SimpleNamespace(load_key=lambda: 'fake-key', call=compare,
+                    PRIMARY_MODEL='gemini-2.5-flash-lite', REVIEW_MODEL='gemini-2.5-flash')
+            manifest = {'items': {'123': {'sourceFirst': 'source.png', 'images': [
+                {'role': 'main1', 'source': 'source.png', 'final': 'remade.png'}]}}}
+            with mock.patch.dict(sys.modules, {'oxygen_verify': model, 'vision_audit': scanner}):
+                report = audit(manifest, root, gate_mode='remake')
+            row = report['items']['123']['images'][0]
+            self.assertEqual(prompts, [REMAKE_PAIR_PROMPT])
+            self.assertEqual(report['promptVersion'], REMAKE_PROMPT_VERSION)
+            self.assertEqual(report['gateMode'], 'remake')
+            self.assertEqual(row['decision'], 'KEEP', 'remade layout redraws bands by design')
+            self.assertTrue(row['pairAccepted'])
+            self.assertNotIn('collapsedSourceBands', row)
+
+    def test_remake_fidelity_report_modes_are_not_interchangeable(self):
+        import hashlib, tempfile
+        from PIL import Image
+        from image_quality_gate import REMAKE_PROMPT_VERSION, validate_candidate_report
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / 'source.png'
+            final = root / 'remade.png'
+            Image.new('RGB', (64, 64), 'white').save(original)
+            Image.new('RGB', (64, 64), 'white').save(final)
+            def record(path):
+                return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+            candidate = {'sourceItemId': '123', 'mainImages': [str(final)], 'detailImages': [], 'skus': [],
+                         'gateMode': 'remake'}
+            row = {'role': 'main1', 'source': record(original), 'final': record(final),
+                   'decision': 'KEEP', 'pairAccepted': True}
+            remake_report = {'promptVersion': REMAKE_PROMPT_VERSION, 'gateMode': 'remake',
+                             'items': {'123': {'sourceFirst': record(original), 'images': [row]}}}
+            self.assertEqual(validate_candidate_report(candidate, remake_report, record(original)), [])
+            fidelity_report = dict(remake_report, promptVersion=PROMPT_VERSION, gateMode='fidelity')
+            errors = validate_candidate_report(candidate, fidelity_report, record(original))
+            self.assertIn('image-quality-report-version-mismatch', errors)
+            self.assertIn('image-quality-mode-mismatch', errors)
+
 if __name__ == '__main__': unittest.main()

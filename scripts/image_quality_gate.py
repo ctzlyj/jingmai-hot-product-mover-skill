@@ -13,6 +13,9 @@ import json
 from pathlib import Path
 
 PROMPT_VERSION = 4
+REMAKE_PROMPT_VERSION = 5
+PROMPT_VERSIONS = {"fidelity": PROMPT_VERSION, "remake": REMAKE_PROMPT_VERSION}
+GATE_MODES = tuple(PROMPT_VERSIONS)
 
 DELETE_FLAGS = frozenset({
     "PATENT", "TAOJINBI", "PRICE_EXPLANATION", "PLATFORM_DELIVERY",
@@ -22,6 +25,8 @@ DELETE_FLAGS = frozenset({
 EDIT_FLAGS = frozenset({"SMALL_VIOLATION", "BRAND", "PLATFORM", "PROMO", "CLAIM", "PERSON"})
 PAIR_KEYS = ("productSame", "violationsCleared", "noNewArtifacts", "qualityOk",
              "layoutPreserved", "safeTextPreserved", "textLegible", "noHoles")
+REMAKE_PAIR_KEYS = ("productSame", "violationsCleared", "noNewArtifacts", "qualityOk",
+                    "layoutClean", "textLegible", "noHoles")
 
 
 def file_evidence(path):
@@ -59,10 +64,17 @@ def decide(role, primary, review=None):
     return "KEEP"
 
 
-def pair_accepted(role, verdict):
-    if not isinstance(verdict, dict) or not all(verdict.get(k) is True for k in PAIR_KEYS):
+def pair_accepted(role, verdict, gate_mode="fidelity"):
+    keys = REMAKE_PAIR_KEYS if gate_mode == "remake" else PAIR_KEYS
+    if not isinstance(verdict, dict) or not all(verdict.get(k) is True for k in keys):
         return False
+    if gate_mode == "remake":
+        return True
     return role != "main1" or verdict.get("sourceFirstMatched") is True
+
+
+def pair_prompt(gate_mode):
+    return REMAKE_PAIR_PROMPT if gate_mode == "remake" else PAIR_PROMPT
 
 
 def collapsed_source_bands(source, final):
@@ -114,11 +126,16 @@ def duplicate_details(paths, threshold=4):
     return duplicates
 
 
-def validate_candidate_report(candidate, report, source_first):
+def validate_candidate_report(candidate, report, source_first, gate_mode=None):
     """Check report coverage and actual bytes before any upload/validation/publish."""
     errors = []
-    if isinstance(report, dict) and report.get("promptVersion") != PROMPT_VERSION:
+    expected_mode = gate_mode or (candidate.get("gateMode") if isinstance(candidate, dict) else None) or "fidelity"
+    if expected_mode not in PROMPT_VERSIONS:
+        return ["image-quality-mode-unknown:" + str(expected_mode)]
+    if isinstance(report, dict) and report.get("promptVersion") != PROMPT_VERSIONS[expected_mode]:
         errors.append("image-quality-report-version-mismatch")
+    if isinstance(report, dict) and (report.get("gateMode") or "fidelity") != expected_mode:
+        errors.append("image-quality-mode-mismatch")
     item = str(candidate.get("sourceItemId") or "")
     entry = (report.get("items") or {}).get(item) if isinstance(report, dict) else None
     if not isinstance(entry, dict):
@@ -203,6 +220,20 @@ PAIR_PROMPT = ("第1张是商家来源原图，第2张是拟上架图。仅对�
                '"layoutPreserved":true,"safeTextPreserved":true,"textLegible":true,"noHoles":true,'
                '"sourceFirstMatched":true,"issues":[]}。无法看清的字段必须为 false。')
 
+REMAKE_PAIR_PROMPT = (
+    "第1张是商家来源原图，第2张是商品经高级重制后的拟上架图。第2张重新设计了版式、配色和文案，"
+    "不要求与第1张的排版或文字一致。"
+    "商品本体严格一致：颜色、版型、轮廓、材质、图案、结构、配件、比例、数量和可见功能必须与第1张相同，"
+    "不得变形、替换或增减；人物按移除并自然补全评估。"
+    "第1张中的品牌词、第三方平台词、价格促销、专利证书和功效承诺等违规点在第2张必须全部清除，且不得新增。"
+    "第2张排版必须正常美观：构图完整、无元素重叠/溢出/错位，观感不劣于优质同类商品图；"
+    "画面不得有乱码错字、大面积空白空洞、裁断头脸或商品畸形；保留文案逐字清晰可读。"
+    "只输出 JSON："
+    '{"productSame":true,"violationsCleared":true,"noNewArtifacts":true,"qualityOk":true,'
+    '"layoutClean":true,"textLegible":true,"noHoles":true,"issues":[]}。'
+    "无法看清的字段必须为 false。"
+)
+
 
 def create_manifest_from_listing(folder, source, listing):
     """Build exact source pairs for a new Taobao link with untouched snapshots.
@@ -248,14 +279,17 @@ def create_manifest_from_listing(folder, source, listing):
     return {"items": {str(source["sourceSku"]): {"sourceFirst": first, "images": images}}}
 
 
-def audit(manifest, root):
+def audit(manifest, root, gate_mode="fidelity"):
     """Lite on all selected images; flash only flagged/unclear; conflicts block."""
+    if gate_mode not in PROMPT_VERSIONS:
+        raise ValueError("unknown gate_mode: " + str(gate_mode))
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import oxygen_verify as pair_model
     import vision_audit as single_model
     key = pair_model.load_key()  # DPAPI only; never persist/print the key
-    output = {"schema": "image-quality-acceptance/1", "promptVersion": PROMPT_VERSION, "items": {}}
+    output = {"schema": "image-quality-acceptance/1", "promptVersion": PROMPT_VERSIONS[gate_mode],
+              "gateMode": gate_mode, "items": {}}
     for item, data in manifest["items"].items():
         source_first = file_evidence(root / data["sourceFirst"])
         rows = []
@@ -291,14 +325,17 @@ def audit(manifest, root):
                             decision = "BLOCK" if role == "main1" else "DELETE"
                 row.update(decision=decision, flags=sorted(_flags(p) | _flags(rp) | source_flags))
                 if decision == "KEEP":
-                    first = pair_model.call(key, source["path"], final["path"], PAIR_PROMPT,
+                    active_prompt = pair_prompt(gate_mode)
+                    first = pair_model.call(key, source["path"], final["path"], active_prompt,
                                             pair_model.PRIMARY_MODEL)
+                    # Whole-band collapse detection is fidelity-only: a remade layout
+                    # legitimately redraws every horizontal band by design.
                     collapsed = (collapsed_source_bands(source["path"], final["path"])
-                                 if source["sha256"] != final["sha256"] else [])
-                    if pair_accepted(role, first) and not collapsed:
+                                 if gate_mode == "fidelity" and source["sha256"] != final["sha256"] else [])
+                    if pair_accepted(role, first, gate_mode) and not collapsed:
                         row["pairAccepted"] = True
                     else:
-                        second = pair_model.call(key, source["path"], final["path"], PAIR_PROMPT,
+                        second = pair_model.call(key, source["path"], final["path"], active_prompt,
                                                  pair_model.REVIEW_MODEL)
                         row["pairAccepted"] = False  # a suspected lost band is never cleared by a model PASS
                         row["decision"] = "BLOCK"  # conflicts and large content loss cannot auto-upload
@@ -333,6 +370,8 @@ def main():
     group.add_argument("--manifest", help="JSON: items -> sourceFirst, images[{role,source,final}]")
     group.add_argument("--from-listing", action="store_true", help="new Taobao draft: manifest.json + listing.json + source snapshots")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--gate-mode", choices=GATE_MODES, default="fidelity",
+                        help="fidelity=source-faithful acceptance (default); remake=high-end remake acceptance, layout may be redesigned")
     args = parser.parse_args()
     root = Path(args.root).resolve()
     if args.from_listing:
@@ -341,7 +380,7 @@ def main():
         manifest = create_manifest_from_listing(root, source, listing)
     else:
         manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8-sig"))
-    report = audit(manifest, root)
+    report = audit(manifest, root, gate_mode=args.gate_mode)
     Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     blocked = sum(r["decision"] != "KEEP" for item in report["items"].values() for r in item["images"])
     print(json.dumps({"items": len(report["items"]), "pendingImages": blocked}, ensure_ascii=False))

@@ -14,7 +14,7 @@
 
 ### 主图高级重制
 
-- 由 agent 依据来源主图与商品事实自主设计生图提示词；一律走生图模型（Oxygen-Product-Pro → Oxygen-Imagen → sufy-image2，内网并发 2-3，失败转 sufy，重试≤2 轮），禁止本地 PS 掩码。
+- 由 agent 依据来源主图与商品事实自主设计生图提示词；改图一律直接走 LTS4AI sufy-image2（用户已确认不走内部生图模型），并发 2-3、重试≤2 轮，禁止本地 PS 掩码。款式/SKU 尺寸标注图如需去掉文字，用 sufy 编辑"移除全部文字+标注线，商品本体/款式/场景不变，遮挡区自然补全"（泡澡桶 4 张代表图已验证）。源 SKU 图本身保留原样，作为按 SKU 上传的规格图。
 - 参考图即保真契约：商品**颜色、版型、轮廓、材质、图案、结构、配件和比例**以用户商品参考图为准，本体不得变形、不得改变内容。
 - 多主图组按“连续购买路径”组织而非重复首图：主图（一个核心购买理由：1 条主标题 + 1 条副标题 + ≤2 个可信证据标签）、场景图、卖点图、白底图、认证图（不得虚构认证）、四宫格图。文字只能来自标题、参考图或用户明确提供的信息；无证据时减少文字。
 - 重构图不留空白空洞、无乱码错字；所有可见中文由生图模型逐字绘制，不使用 HTML/SVG/Canvas/本地字体叠字。
@@ -42,30 +42,32 @@
 
 ## 门禁与验收
 
-- `image_quality_gate.py` v4 的 PAIR_PROMPT 仍是“保真搬运”口径，**改造为高级重制口径是本模式第一个 MVP**：`productSame` 严格（商品本体一致）、`violationsCleared`、`qualityOk`、`noHoles` 必查；`layoutPreserved` 改为“排版正常美观”而非“与原图一致”。改造后补回归测试再批量。
+- `image_quality_gate.py` 已实现高级重制口径（首个 MVP 已交付，2026-09-28）：运行加 `--gate-mode remake`，报告 `promptVersion=5` 且携带 `gateMode":"remake"`，与 fidelity（v4）版本与模式双向隔离、混用即拦截。`productSame` 严格（商品本体颜色/版型/轮廓/材质/图案/结构/配件/比例/数量一致）、`violationsCleared`、`qualityOk`、`noHoles`、`noNewArtifacts`、`textLegible` 必查；`layoutPreserved` 已由 `layoutClean`（排版正常美观、无重叠/溢出/错位）取代，不再要求与来源图排版/文案一致，首图允许新构图；整条塌缩带检测不适用于 remake（重制本就会重画所有横带），空洞由单图 layoutOk/uncertain 与 pair 模型 noHoles/layoutClean 把关。回归测试见 `tests/test_image_quality_gate.py` 三个 remake 用例。
 - 视觉审图：`gemini-2.5-flash-lite` 全量初筛，疑似项与看不清的图用 `gemini-2.5-flash` 复核；两档冲突不得判干净。删除/放行结论必须多遍收敛，且模型逐字引用违规原文作证据；单遍判断不可靠（实测同批两遍判删 24 vs 2），拿不准保留并标记待审。
 - 缓存按提示词版本与图片 SHA-256 绑定；构图疑似塌缩带强制 BLOCK。
 
 ## 发布与回查
 
 - 沿用现有京东来源链路：`jd_product_mover.py`/`jd_product_pipeline.py` 采集建稿，`jdo_listing_mvp.py`/`publish_local_draft.py` 发布，`deferred_publish_batch.py` 幂等回查。
+- 图片落位规则（2026-09-28 泡澡桶全链路验证）：主图画廊只按颜色（第一维销售属性）分组；同款式共用一套组图 `[款式代表图@1 + 公共主图@2-9]`，SKU 缩略图=款式代表图；**逐 SKU 尺码图写入 `SkuGgtImage` 规格图**（imgRefId=该 SKU 的 uuid/skuId），选尺码时展示对应标注图。编辑场景 colorId/imgRefId 必须用 VenderCategoryValue 卡片的 mappingId（UUID）；原子 PATCH 的落位陷阱与恢复流程见 `references/sku-image-group-binding.md`。
 - 每次京麦写操作前 `A.identity()` 三要素核对（店铺名+venderId+Profile 完全一致），禁止 default Profile；其余 6 店 venderId 首次使用时用京麦 CLI 实时查询核对，禁止按店名猜。
 - 正式发布需显式确认字符串 `PUBLISH_TO_JD`；线上补丁先 dry-run 再 apply，PATCH 后独立回读确认 `ALREADY_CURRENT`；写结果不明只 reconcile 不重放。
 - 原链接视频可照搬（`automate_main_video` 幂等绑定并逐 SKU 回查）；已有 SKU 绑定其他视频时停止，不覆盖。
 - 用户自行下架的商品不代为上架；不动用户正在用的浏览器标签。
 
-## 定价门禁（批量前必须问用户）
+## 定价规则（用户已确认，2026-09-28 泡澡桶批次验证）
 
-- 方案 A：等 1688 供货价确认后，按实际到货成本用 `source_pricing.py` component 逐项取整定价。
-- 方案 B：先按京东参考价溢价区间上架，拿到 1688 货源后调价。
-- 用户未明确选择前，不得批量定价或发布。
+- 基准：**竞品（源链接同款 SKU）到手价，我方在其基础上降低 3%**。竞品到手价按源 SKU 京东价 ×（1−竞品补贴率）取（表格"到手价"列优先；无表时用源商品标签推补贴率，如焕新补贴 15%，锚点 288→244.8 已验证）。
+- 目标到手价 `T = 竞品到手 × 0.97`，逐 SKU 按 `listing.json` 的 `sourcePrice` 映射，不得按尺码猜阶梯。
+- 反推京东价满足：`Jd − round(Jd×0.15, 2) − round(Jd×0.85×0.15, 2) = T`（直降 15% + 国补 Jd×85%×15%，均为默认配置活动）。在 `T/0.7225` 附近 ±0.60 内搜分值精确解；无精确解才用最近似解并在回执注明。
+- 逐 SKU 写 `SkuJdprice` 随整版编辑提交；线上生效后逐 SKU 复核 `jdPrice` 与反算到手价，40/40 需全对。锚点示例：源 288 → 竞品到手 244.8 → 我方到手 237.46 → 京东价 328.66。
+- 后续拿到 1688 供货价要调价时，仍按此公式重新反推，不直接改到手价。
 
 ## MVP 执行方式
 
 先做单商品端到端：用户提供第一条京东链接、目标店铺和定价基准后，采集 → 重制 → 门禁 → 用户审核 → 发布 → 回查，全链路记录各阶段耗时与失败点，跑通后再批量。新类目按 `references/adapting-new-category.md` 小规模验证，不直接套旧 Schema。
 
-## 待办（未验证前不得宣称完成）
+## 已验证里程碑与待办
 
-- `image_quality_gate.py` PAIR_PROMPT 高级重制口径改造与回归测试（首个 MVP 交付物）。
-- 生图池复用 `D:\caotong.888\Documents\ChatGPT\搬运上架skill\scripts\aroma-20260922\`（`oxygen_pool.py`、`sufy_fallback.py`、`compose_model_edits.py` 等）时需去批次架构耦合、改造为任务局部脚本。
-- 京东来源详情长图的切片分析执行方式（文本模型多图 JSON 分析已在 image-studio 验证，Python 侧适配未做）。
+- 2026-09-28：首条真实链接（泡澡桶 10233331213967 → 10036194410506）端到端跑通：sufy 重制主图/详情 → 门禁 → 发布 → 颜色组+代表图修整 → 40 SKU 规格图 → 竞品到手价×97% 反推定价 40/40 生效。新对话按 `references/jd-hot-replica-handoff.md` 执行。
+- 待办：京东来源详情长图的切片分析 Python 侧适配（文本模型多图 JSON 分析已在 image-studio 验证，尚未接入本 Skill 主流程）；规格图批量上传后的买家端样式抽查待用户实测反馈。

@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 config/store.local.json
+config/*.store.json
 config/*.reference.json
 outputs/
 links.txt

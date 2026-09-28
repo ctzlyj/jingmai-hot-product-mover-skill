@@ -588,6 +588,21 @@ class ProductMoverTests(unittest.TestCase):
         self.assertEqual(1, len(errors))
         self.assertIn("同一款式的不同尺寸必须共用同一套主图", errors[0])
 
+    def test_single_set_allows_distinct_first_image_per_size(self):
+        manifest = {
+            "category": {"id": 53188},
+            "product": {"mainImageMode": "single_set"},
+            "skus": [
+                {"skuKey": "SKU-A", "styleAlias": "奶咖色无盖款"},
+                {"skuKey": "SKU-B", "styleAlias": "奶咖色无盖款"},
+            ],
+            "images": [
+                {"role": "sku_main", "skuKey": "SKU-A", "localPath": "a.png"},
+                {"role": "sku_main", "skuKey": "SKU-B", "localPath": "b.png"},
+            ],
+        }
+        self.assertEqual([], multi_set_manifest_errors(manifest))
+
     def test_online_audit_requires_style_image_group(self):
         manifest = {
             "skus": [{"styleAlias": "喜居宝地"}],
