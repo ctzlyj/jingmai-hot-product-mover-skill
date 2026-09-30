@@ -553,6 +553,16 @@ def collect_source(url: str, client: HttpClient, max_workers: int = 8) -> dict[s
                 f"https://item.m.jd.com/product/{input_sku}.html",
                 video_id,
             )
+    else:
+        # 2026-09-30: some source videos are PC-page-only (no mobile
+        # mainVideoId). Probe the rendered PC page before reporting no video;
+        # 10201583840642 was initially mis-collected as video-less this way.
+        from browser_source_read import BrowserReadError, read_jd_pc_video
+        try:
+            video = {"resolutionMethod": "browser-pc-video-element",
+                     **read_jd_pc_video(f"https://item.jd.com/{input_sku}.html")}
+        except (BrowserReadError, MoverError, OSError):
+            video = None
     return {
         "schemaVersion": "jd-mover/v1",
         "collectedAt": now_iso(),

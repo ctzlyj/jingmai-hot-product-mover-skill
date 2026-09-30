@@ -75,3 +75,43 @@ def read_jd_video(product_url, video_id):
     if result.get("videoId") != str(video_id) or not isinstance(result.get("text"), str) or not result["text"]:
         raise BrowserReadError("Browser video response does not match the requested video")
     return result["text"]
+
+
+def read_jd_pc_video(product_url):
+    """Read the PC-only <video> element some JD products carry.
+
+    2026-09-30 evidence (10201583840642): some source videos never appear in
+    the mobile page's mainVideoId (gray switch off) and only render as a PC
+    <video> element. The mobile-first collector misses them, so collect()
+    falls back to this probe before declaring the source video-less.
+    """
+    parsed = urlparse(product_url)
+    if parsed.scheme != "https" or parsed.hostname != "item.jd.com" or parsed.username or parsed.password:
+        raise BrowserReadError("JD PC video reader requires a public item.jd.com URL")
+    if not re.fullmatch(r"/\d+\.html", parsed.path):
+        raise BrowserReadError("Invalid JD product path")
+    script = """
+async page => {
+  try {
+    await page.goto(__URL__, {waitUntil: 'domcontentloaded', timeout: 30000});
+    await page.waitForTimeout(8000);
+    return await page.evaluate(() => {
+      const seen = [];
+      for (const el of document.querySelectorAll('video')) {
+        const src = el.currentSrc || el.src || '';
+        if (/^https?:\\/\\//.test(src)) {
+          seen.push({downloadUrl: src, durationSeconds: Math.round(el.duration || 0)});
+        }
+      }
+      return {ok: seen.length > 0, videos: seen};
+    });
+  } catch (e) {
+    return {ok: false, error: String(e), videos: []};
+  }
+}
+""".replace("__URL__", json.dumps(f"https://{parsed.hostname}{parsed.path}", ensure_ascii=True))
+    result = run_read_script(script, timeout=150)
+    videos = result.get("videos") if isinstance(result, dict) else None
+    if not videos:
+        raise BrowserReadError("PC page did not expose a downloadable product video")
+    return videos[0]
