@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Fail-closed, source-paired image selection for listing drafts.
+"""Technical-only image file helpers for listing drafts.
 
-CLI consumes a source/selected-image manifest and writes a hash-bound approval
-report. It never edits images, uploads, or calls a Jingmai write API. Missing
-model evidence cannot be interpreted as CLEAN.
+2026-09-30: visual detection (VLM gate, brand scan) was removed from this
+Skill at the user's request. This module keeps only byte/hash/coverage
+helpers used by publish_local_draft for technical report validation;
+it never calls a vision model and never edits or uploads images.
 """
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -15,87 +15,11 @@ from pathlib import Path
 PROMPT_VERSION = 4
 REMAKE_PROMPT_VERSION = 5
 PROMPT_VERSIONS = {"fidelity": PROMPT_VERSION, "remake": REMAKE_PROMPT_VERSION}
-GATE_MODES = tuple(PROMPT_VERSIONS)
-
-DELETE_FLAGS = frozenset({
-    "PATENT", "TAOJINBI", "PRICE_EXPLANATION", "PLATFORM_DELIVERY",
-    "PLATFORM_PROMOTION", "BRAND_INFO_ONLY", "COMPANY_PROFILE",
-    "SOURCE_FACTORY", "DENSE_VIOLATIONS", "LOW_VALUE",
-})
-EDIT_FLAGS = frozenset({"SMALL_VIOLATION", "BRAND", "PLATFORM", "PROMO", "CLAIM", "PERSON"})
-PAIR_KEYS = ("productSame", "violationsCleared", "noNewArtifacts", "qualityOk",
-             "layoutPreserved", "safeTextPreserved", "textLegible", "noHoles")
-REMAKE_PAIR_KEYS = ("productSame", "violationsCleared", "noNewArtifacts", "qualityOk",
-                    "layoutClean", "textLegible", "noHoles")
 
 
 def file_evidence(path):
     path = Path(path).resolve()
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-
-
-def _flags(parsed):
-    if not isinstance(parsed, dict):
-        return set()
-    flags = parsed.get("flags") or []
-    return {str(flag).upper() for flag in flags} if isinstance(flags, list) else set()
-
-
-def decide(role, primary, review=None):
-    """Never let a clean flash verdict erase a severe flag from the lite pass."""
-    if not isinstance(primary, dict) or (review is not None and not isinstance(review, dict)):
-        return "BLOCK"
-    flags = _flags(primary) | _flags(review)
-    if flags & DELETE_FLAGS:
-        return "BLOCK" if role == "main1" else "DELETE"
-    for parsed in (primary, review):
-        if parsed is None:
-            continue
-        if not isinstance(parsed.get("flags"), list) or not all(isinstance(f, str) for f in parsed["flags"]):
-            return "BLOCK"
-        if parsed.get("uncertain") or parsed.get("legible") is not True or parsed.get("layoutOk") is not True:
-            return "BLOCK"
-        if parsed.get("valuable") is not True or not isinstance(parsed.get("violations"), list):
-            return "BLOCK"
-    if flags & EDIT_FLAGS or primary["violations"] or (review and review["violations"]):
-        return "EDIT"
-    if flags:
-        return "BLOCK"  # unknown labels need a human classification
-    return "KEEP"
-
-
-def pair_accepted(role, verdict, gate_mode="fidelity"):
-    keys = REMAKE_PAIR_KEYS if gate_mode == "remake" else PAIR_KEYS
-    if not isinstance(verdict, dict) or not all(verdict.get(k) is True for k in keys):
-        return False
-    if gate_mode == "remake":
-        return True
-    return role != "main1" or verdict.get("sourceFirstMatched") is True
-
-
-def pair_prompt(gate_mode):
-    return REMAKE_PAIR_PROMPT if gate_mode == "remake" else PAIR_PROMPT
-
-
-def collapsed_source_bands(source, final):
-    """Conservatively flag whole horizontal bands whose source content vanished.
-
-    This read-only pixel check is a blocker, never a reason to approve edits or
-    delete an image. It catches edited title/footer bands missed by both VLMs.
-    """
-    from PIL import Image, ImageFilter
-    coverages = []
-    for path in (source, final):
-        with Image.open(path) as image:
-            edges = image.convert("L").resize((256, 256), Image.Resampling.LANCZOS).filter(ImageFilter.FIND_EDGES)
-        values = []
-        for band in range(8):
-            crop = edges.crop((1, band * 32 + 1, 255, (band + 1) * 32 - 1))
-            hist = crop.histogram()
-            values.append(sum(hist[48:]) / sum(hist))
-        coverages.append(values)
-    before, after = coverages
-    return [band for band in range(8) if before[band] >= 0.12 and after[band] <= 0.025]
 
 
 def _dhash(path):
@@ -111,8 +35,8 @@ def _dhash(path):
 def duplicate_details(paths, threshold=4):
     """Conservative dHash shortlist, including exact duplicates across encodings.
 
-    A visual model/human should review ambiguous near matches; this function
-    returns blockers, never silently removes SKU/detail images.
+    A human should review ambiguous near matches; this function returns
+    blockers, never silently removes SKU/detail images.
     """
     seen = []
     duplicates = []
@@ -197,44 +121,6 @@ def validate_candidate_report(candidate, report, source_first, gate_mode=None):
     return errors
 
 
-SINGLE_PROMPT = (
-    "审核最终候选商品图。逐字核对文字、字形、商品、画面。专利/专利证书、淘金币、价格或活动说明、"
-    "天猫明日达等平台服务和活动图、品牌信息页、公司介绍、源头工厂以及低价值图一律判删除；"
-    "不论是否首主图，只要违规内容占画面大面积、遍布多个区域，或移除后必须整块改写正常排版，一律标 DENSE_VIOLATIONS；首主图应 BLOCK 整件，其余图应删除，不得仅标 SMALL_VIOLATION。"
-    "小面积违规才标 SMALL_VIOLATION 待局部修复；未经违规的原有文字不应被删除。"
-    "检查缺字乱码、排版错误、大面积留白空洞及商品变形。仅输出 JSON："
-    "flags 可以从 PATENT、TAOJINBI、PRICE_EXPLANATION、PLATFORM_DELIVERY、PLATFORM_PROMOTION、"
-    "BRAND_INFO_ONLY、COMPANY_PROFILE、SOURCE_FACTORY、DENSE_VIOLATIONS、LOW_VALUE、"
-    "SMALL_VIOLATION、BRAND、PLATFORM、PROMO、CLAIM、PERSON 中选多个。"
-    '{"flags":[], '
-    '"violations":[{"term":"违规词","text":"整句"}],'
-    '"legible":true,"layoutOk":true,"valuable":true,"uncertain":false}。'
-    "flags 数组只填实际命中的代号；看不清就 uncertain=true、legible=false，不得猜测干净。"
-)
-
-PAIR_PROMPT = ("第1张是商家来源原图，第2张是拟上架图。仅对违规点允许小面积改动，未违规的文字、字体、字号、"
-               "文字位置与排版、商品外形数量及场景必须与第1张一致。人物按移除并自然补全评估。"
-               "第1张若是来源首主图，第2张必须仍是对应首主图，不能换成新构图或删光正常文案。"
-               "仔细检查乱码错字、排版错误、商品变形、空白空洞、专利或平台促销残留。只输出 JSON："
-               '{"productSame":true,"violationsCleared":true,"noNewArtifacts":true,"qualityOk":true,'
-               '"layoutPreserved":true,"safeTextPreserved":true,"textLegible":true,"noHoles":true,'
-               '"sourceFirstMatched":true,"issues":[]}。无法看清的字段必须为 false。')
-
-REMAKE_PAIR_PROMPT = (
-    "第1张是商家来源原图，第2张是商品经高级重制后的拟上架图。第2张重新设计了版式、配色和文案，"
-    "不要求与第1张的排版或文字一致。"
-    "商品本体严格一致：颜色、版型、轮廓、材质、图案、结构、配件、比例、数量和可见功能必须与第1张相同，"
-    "不得变形、替换或增减；人物按移除并自然补全评估。"
-    "第1张中的品牌词、第三方平台词、价格促销、专利证书和功效承诺等违规点在第2张必须全部清除，且不得新增。"
-    "第2张排版必须正常美观：构图完整、无元素重叠/溢出/错位，观感不劣于优质同类商品图；"
-    "画面不得有乱码错字、大面积空白空洞、裁断头脸或商品畸形；保留文案逐字清晰可读。"
-    "只输出 JSON："
-    '{"productSame":true,"violationsCleared":true,"noNewArtifacts":true,"qualityOk":true,'
-    '"layoutClean":true,"textLegible":true,"noHoles":true,"issues":[]}。'
-    "无法看清的字段必须为 false。"
-)
-
-
 def create_manifest_from_listing(folder, source, listing):
     """Build exact source pairs for a new Taobao link with untouched snapshots.
 
@@ -277,115 +163,3 @@ def create_manifest_from_listing(folder, source, listing):
                 raise ValueError("image quality gate: path outside draft")
         images.append({"role": role, "source": original, "final": path})
     return {"items": {str(source["sourceSku"]): {"sourceFirst": first, "images": images}}}
-
-
-def audit(manifest, root, gate_mode="fidelity"):
-    """Lite on all selected images; flash only flagged/unclear; conflicts block."""
-    if gate_mode not in PROMPT_VERSIONS:
-        raise ValueError("unknown gate_mode: " + str(gate_mode))
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import oxygen_verify as pair_model
-    import vision_audit as single_model
-    key = pair_model.load_key()  # DPAPI only; never persist/print the key
-    output = {"schema": "image-quality-acceptance/1", "promptVersion": PROMPT_VERSIONS[gate_mode],
-              "gateMode": gate_mode, "items": {}}
-    for item, data in manifest["items"].items():
-        source_first = file_evidence(root / data["sourceFirst"])
-        rows = []
-        for image in data["images"]:
-            role = str(image["role"])
-            source = file_evidence(root / image["source"])
-            final = file_evidence(root / image["final"])
-            row = {"role": role, "source": source, "final": final, "decision": "BLOCK", "pairAccepted": False}
-            try:
-                primary = single_model.call(key, single_model.PRIMARY_MODEL, final["path"])
-                p = primary.get("parsed") if primary.get("ok") else None
-                flagged = single_model.needs_review(primary)
-                flagged = flagged or bool(_flags(p)) or (isinstance(p, dict) and (
-                    p.get("legible") is not True or p.get("layoutOk") is not True or p.get("valuable") is not True))
-                r = single_model.call(key, single_model.REVIEW_MODEL, final["path"]) if flagged else None
-                rp = (r or {}).get("parsed") if r and r.get("ok") else None
-                decision = decide(role, p, rp) if (not flagged or rp is not None) else "BLOCK"
-                source_flags = set()
-                if source["sha256"] != final["sha256"]:
-                    source_primary = single_model.call(key, single_model.PRIMARY_MODEL, source["path"])
-                    source_parsed = source_primary.get("parsed") if source_primary.get("ok") else None
-                    if not isinstance(source_parsed, dict):
-                        decision = "BLOCK"
-                    else:
-                        source_flags |= _flags(source_parsed)
-                        if single_model.needs_review(source_primary):
-                            source_review = single_model.call(key, single_model.REVIEW_MODEL, source["path"])
-                            if source_review.get("ok") and isinstance(source_review.get("parsed"), dict):
-                                source_flags |= _flags(source_review["parsed"])
-                            elif not (source_flags & DELETE_FLAGS):
-                                decision = "BLOCK"
-                        if source_flags & DELETE_FLAGS:
-                            decision = "BLOCK" if role == "main1" else "DELETE"
-                row.update(decision=decision, flags=sorted(_flags(p) | _flags(rp) | source_flags))
-                if decision == "KEEP":
-                    active_prompt = pair_prompt(gate_mode)
-                    first = pair_model.call(key, source["path"], final["path"], active_prompt,
-                                            pair_model.PRIMARY_MODEL)
-                    # Whole-band collapse detection is fidelity-only: a remade layout
-                    # legitimately redraws every horizontal band by design.
-                    collapsed = (collapsed_source_bands(source["path"], final["path"])
-                                 if gate_mode == "fidelity" and source["sha256"] != final["sha256"] else [])
-                    if pair_accepted(role, first, gate_mode) and not collapsed:
-                        row["pairAccepted"] = True
-                    else:
-                        second = pair_model.call(key, source["path"], final["path"], active_prompt,
-                                                 pair_model.REVIEW_MODEL)
-                        row["pairAccepted"] = False  # a suspected lost band is never cleared by a model PASS
-                        row["decision"] = "BLOCK"  # conflicts and large content loss cannot auto-upload
-                        row["reviewIssues"] = (second or {}).get("issues", [])[:8]
-                        if collapsed:
-                            row["collapsedSourceBands"] = collapsed
-                            row["issues"] = ["large-source-content-loss"]
-                elif decision == "EDIT":
-                    row["issues"] = ["局部违规需修复并重新验收"]
-            except Exception as error:
-                row["issues"] = [type(error).__name__]  # no request body or credentials in report
-            rows.append(row)
-        detail_rows = [r for r in rows if r["role"] == "detail" and r["decision"] == "KEEP"]
-        try:
-            for duplicate in duplicate_details([r["final"]["path"] for r in detail_rows]):
-                for row in detail_rows:
-                    if row["final"]["path"] == duplicate["path"]:
-                        row["decision"] = "BLOCK"
-                        row["pairAccepted"] = False
-                        row["issues"] = ["近重复详情图，需人工决定保留页"]
-        except (OSError, ValueError):
-            for row in detail_rows:
-                row["decision"] = "BLOCK"; row["pairAccepted"] = False
-        output["items"][str(item)] = {"sourceFirst": source_first, "images": rows}
-    return output
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", required=True)
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--manifest", help="JSON: items -> sourceFirst, images[{role,source,final}]")
-    group.add_argument("--from-listing", action="store_true", help="new Taobao draft: manifest.json + listing.json + source snapshots")
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--gate-mode", choices=GATE_MODES, default="fidelity",
-                        help="fidelity=source-faithful acceptance (default); remake=high-end remake acceptance, layout may be redesigned")
-    args = parser.parse_args()
-    root = Path(args.root).resolve()
-    if args.from_listing:
-        source = json.loads((root / "manifest.json").read_text(encoding="utf-8-sig"))
-        listing = json.loads((root / "listing.json").read_text(encoding="utf-8-sig"))
-        manifest = create_manifest_from_listing(root, source, listing)
-    else:
-        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8-sig"))
-    report = audit(manifest, root, gate_mode=args.gate_mode)
-    Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    blocked = sum(r["decision"] != "KEEP" for item in report["items"].values() for r in item["images"])
-    print(json.dumps({"items": len(report["items"]), "pendingImages": blocked}, ensure_ascii=False))
-    return 1 if blocked else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

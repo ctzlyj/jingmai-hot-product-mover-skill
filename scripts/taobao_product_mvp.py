@@ -178,7 +178,6 @@ def build_source(
     return {
         "schemaVersion": "taobao-mover/v1",
         "sourcePlatform": "taobao",
-        "imageQualityGate": "strict",
         "productKeyPrefix": "TB",
         "collectedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "sourceUrl": f"https://item.taobao.com/item.htm?id={item_id}",
