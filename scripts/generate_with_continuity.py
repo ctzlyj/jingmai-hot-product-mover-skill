@@ -24,14 +24,14 @@ def parse_json(text):
                 return None
     return None
 
-def attempt(refs, prompt, workdir, timeout=600):
+def attempt(refs, prompt, workdir, ratio="Adaptive", timeout=600):
     # 2026-09-30: gpt-image-2.5 new chain (NextAICore chat adapter) is the
     # sufy-image2 client default; do not pin the retired SF-* model IDs.
     # refs: [own source] + optional neighbor source refs (continuity mode).
     cmd = [PY, "-X", "utf8", SUFY_CLI, "edit", "--prompt", prompt]
     for r in refs:
         cmd += ["--image", str(r)]
-    cmd += ["--ratio", "Adaptive", "--quality", "2K", "--output-dir", str(workdir)]
+    cmd += ["--ratio", ratio, "--quality", "2K", "--output-dir", str(workdir)]
     started = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     res = parse_json(p.stdout)
@@ -137,12 +137,17 @@ def main():
         if a.dry_run:
             enh = ENH.get(key, {}) if kind == "images" else {}
             prompt = item["prompt"]
+            if kind == "deannotate" or str(item.get("role")) == "spu_main" \
+                    or str(item.get("imageKey", "")).startswith(("SPU-MAIN-", "SKU-MAIN-")):
+                ratio = "1:1"
+            else:
+                ratio = "Adaptive"
             if enh.get("suffix"):
                 prompt = prompt + "\n\n" + enh["suffix"]
                 nb_refs = neighbor_ref_paths(enh)
                 if nb_refs:
                     prompt += "\n参考图顺序：第1张是本图原图；其余是相邻详情页参考图，仅用于统一色调、背景和版式，严禁把它们中的商品、文字或图案内容画进本图。"
-            print(f"[dry-run] {key} kind={kind} refs={neighbor_ref_paths(enh) if enh else []}\n  prompt: {prompt}\n")
+            print(f"[dry-run] {key} kind={kind} ratio={ratio} refs={neighbor_ref_paths(enh) if enh else []}\n  prompt: {prompt}\n")
             return key, True
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = D / "重制" / "_tmp" / key
@@ -167,7 +172,16 @@ def main():
                         im.thumbnail((1100, 1100))
                         im.save(nb, "JPEG", quality=88)
                         refs.append(nb)
-                r = attempt(refs, prompt, tmp)
+                # 2026-09-30: JD requires spu_main/sku_main images to be 1:1.
+                # Generate them natively square (verified 1254x1254 output);
+                # only detail pages keep the adaptive vertical ratio. Do NOT
+                # rely on post-generation padding - it is a fallback only.
+                if kind == "deannotate" or str(item.get("role")) == "spu_main" \
+                        or str(item.get("imageKey", "")).startswith(("SPU-MAIN-", "SKU-MAIN-")):
+                    ratio = "1:1"
+                else:
+                    ratio = "Adaptive"
+                r = attempt(refs, prompt, tmp, ratio=ratio)
             except Exception as e:
                 r = {"ok": False, "error": f"exception: {e}"}
             if r.get("ok") and Path(r["output"]).is_file():

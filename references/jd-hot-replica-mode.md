@@ -46,6 +46,7 @@
 - Base URL `https://api.lts4ai.com/v1`，`Authorization: Bearer`，模型默认 `gpt-image-2.5`（新链路直连 ID，LTS4AI 生图渠道经 NextAICore 适配层以 chat 形态转发，客户端契约由 sufy-image2 Skill 处理）；`GPT-image-2` 为兼容别名，官方 Imagen 通道可选；保留用户显式选择，不得静默回退。
 - 文生图 `POST /images/generations`（JSON：model/prompt/size/output_format=png，不发送 n、seed、response_format）；多参考编辑 `POST /images/edits`（multipart，image 按参考顺序重复，JPEG/PNG/GIF/WebP，≤12 张且源字节 ≤15MB）。
 - 比例映射：1:1→1024x1024，16:9/4:3/3:2→1536x1024，9:16/3:4/2:3/4:5→1024x1536，21:9/5:4/2:1→auto；4K 有独立映射；编辑时 Adaptive 按第一张参考图取最近档。
+- 生成比例（2026-09-30 实测）：spu_main/sku_main 必须传 `--ratio 1:1`（gpt-image-2.5 实测输出 1254×1254）；`Adaptive` 会按源图取最近档，3:4 源 SKU 图会生成 3:4 并被京东 1:1 预检拒绝。`generate_with_continuity.py` 已按 imageKey/role 自动传 1:1，详情页仍用 Adaptive；`hot_replica_mode.square_pad_image` 仅作兜底。
 - Key 走 DPAPI 凭据（`%LOCALAPPDATA%\JoyCode\credentials\sufy-image2.dpapi`、`oxygen-product-pro.dpapi`），只进进程环境变量，绝不进源码/日志/文档/回复。
 - 超时 1K/2K=10 分钟、4K=30 分钟；重试预算 2 次（1s/3s），仅显式 429 与只读 GET 5xx；**生图 POST 出现 408/409/5xx、网络中断或响应不完整即结果不明：先对账已产出图片与计费，不得自动重放整批**；已成功的输出文件保留，失败批不重放成功任务。
 
