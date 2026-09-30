@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 
 DYNAMIC_PROMPT_TEMPLATE = (
@@ -78,3 +79,38 @@ def brand_gate(reference: dict, category_label: str = "") -> dict:
         "category": category_label,
         "authorizedBrandCount": len(brand_names),
     }
+
+
+def square_pad_image(path: Path) -> tuple[int, int]:
+    """Pad a generated image to exactly 1:1 (JD spu_main/sku_main rule).
+
+    Non-square generated SKU/main images are rejected by the local preflight
+    ("sku_main 必须为1:1"). Regenerating wastes quota, so pad losslessly with
+    row-wise edge extension (keeps vertical gradients natural, no stretching,
+    no cropping). The file is modified in place; returns the final size.
+    2026-09-30 verified on 10201583840642 SKU图1.png (1086x1448 -> 1448x1448,
+    published and platform-verified afterwards).
+    """
+    from PIL import Image
+
+    with Image.open(path) as im:
+        rgb = im.convert("RGB")
+        width, height = rgb.size
+        if width == height:
+            return width, height
+    import numpy as np
+
+    arr = np.asarray(rgb)
+    if width < height:
+        pad = height - width
+        left = np.repeat(arr[:, :1, :], pad // 2, axis=1)
+        right = np.repeat(arr[:, -1:, :], pad - pad // 2, axis=1)
+        arr = np.concatenate([left, arr, right], axis=1)
+    else:
+        pad = width - height
+        top = np.repeat(arr[:1, :, :], pad // 2, axis=0)
+        bottom = np.repeat(arr[-1:, :, :], pad - pad // 2, axis=0)
+        arr = np.concatenate([top, arr, bottom], axis=0)
+    out = Image.fromarray(arr)
+    out.save(path, "PNG")
+    return out.size
