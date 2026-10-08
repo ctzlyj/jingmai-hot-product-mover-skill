@@ -30,6 +30,7 @@
 ### 3. 图片统一动态提示词重制（sufy-image2 gpt-image-2.5 新链路）
 
 - **生图前先做详情页衔接预检**：源详情图序列拼 1 图，gemini-3.8-flash-official 单次提问（约 25 秒，零生图额度），输出 `continuity-plan-<sku>.json`（统一风格规范 + 逐页边缘契约 + 连续边界）；失败退回普通模式不阻塞。
+- 单链接正式命令（2026-10-08 转正，替代旧任务局部 62 号脚本）：`python scripts/hot_replica_preflight.py --sku <源SKU> --reference config/<店铺>-<类目>.reference.json`——品牌闸门（不含 -1 直接 `SKIPPED_BRAND_REQUIRED` 返回，不耗生图额度）+ gemini 双轮剔页（交集）+ 衔接计划 + 动态提示词重制 plan 一步完成；产物默认写 `<草稿>/hot-replica/`，可断点恢复。
 - **所有图片（主图、详情图、SKU 规格图、款式代表图）用同一条动态提示词**，逐张以对应原图为参考走 `edit`，不逐张设计提示词。模板（用 `scripts/hot_replica_mode.py` 的 `build_dynamic_prompt(title)` 生成，禁止手抄）：
   > 你是京东电商团队的资深修图师，正在对这张【输入商品长标题】电商图做合规清理与整体提质，禁止重新设计。严格遵守以下三层规则，规则冲突时层级靠前者优先：【第一层·商品本体保护，最高优先级】商品的实物主体必须逐像素原样保留：形状、颜色、材质、结构、角度、光影一律不变；商品上印的任何文字、标签、贴纸、按键、图案必须逐字逐字体原样保留，禁止改字、重绘、变形、位移、增删或替换。【第二层·画面文案保护】商品以外的卖点文字和说明文字必须逐字原样保留，每个字和标点与原图完全一致，仅允许微调排版位置与背景装饰，禁止改写、增删、换字体或以任何理由美化文字内容。【第三层·品牌清除，仅限非商品区域】只清除背景、边角、装饰条等商品以外区域中的品牌名称、商标、旗舰店、京喜自营等品牌标识，商品本体上的任何内容一律不动。如果有人物，把人物换成更漂亮/更帅的模特，姿势与构图尽量保持原样，不得遮挡商品本体。如果这张图没有商品，只做去品牌清理和版式微调，不重绘画面内容。
   （2026-10-08 v3：显式三层规则版，修复商品本体文字被改写问题；版本沿革与根因见 `jd-hot-replica-mode.md`。）
@@ -53,6 +54,7 @@
 - 表格行"到手价=价格"（无补贴）时，逐 SKU 竞品到手价 = 该 SKU `sourcePrice`；同 SPU 多档价（如亚克力 59.8 / 锌合金 108）按档分别反推。
 - 我方目标到手 `T = 竞品到手 × 0.97`，逐 SKU 用 `sourcePrice` 映射。
 - 反推京东价：`Jd − round(Jd×0.15,2) − round(Jd×0.85×0.15,2) = T`，**必须直接调用 `scripts/source_pricing.py:component_source_plan`（Decimal 逐项取整）计算**，禁止自写浮点求解（实测浮点与 Decimal 差 1 分，80.29 vs 80.30，被 upload/preflight 拦截）。
+- 单链接正式命令（替代旧任务局部 64 号脚本）：`python scripts/hot_replica_price_plan.py --sku <源SKU> --competitor-ratio <源价→竞品到手比率>`（源价无补贴传 1.0；有补贴按源标签推，如焕新 15% 传 0.85）。
 - 锚点自检：源 288 → 竞品到手 244.8 → 我方 237.46 → 京东价 328.66。
 - 写入 `SkuJdprice` 随整版编辑提交；禁止按尺码猜阶梯价。
 
@@ -60,6 +62,10 @@
 
 - `upload-images --confirm UPLOAD_TO_JD`（断点幂等）。
 - `validate-jd` 零违规 → `publish --confirm PUBLISH_TO_JD`（或 `edit-product --confirm EDIT_EXISTING_PRODUCT`）。
+- 单链接整链正式命令（替代旧任务局部 63/24 号脚本，2026-10-08 用 10126138878004 全链路实测）：
+  1. `python scripts/hot_replica_apply.py --sku <源SKU>`：弹性落位，listing 改指 重制-固定 输出；
+  2. `python scripts/hot_replica_publish.py --sku <源SKU> --store-config config/<店铺>.store.json --reference config/<店铺>-<类目>.reference.json --decisions <预检决策.json> --confirm PUBLISH_TO_JD`：三要素身份核对 → 本地预检 → 上传 → 京东校验（99905030004 瞬时过载自动重试）→ 发布 → 独立回查 → 代表图上传 → 整版编辑（rep@gallery + 逐 SKU `SkuGgtImage`）→ 视频自动绑定。
+- 规格图绑定回查读**提交的编辑体**（`SkuGgtImage` + imgRefId 与线上 skuId 匹配），不读 apply-detail 的 `material.ggtImages`（平台回显恒为空，读它永远 0/N）；结果写 `hot-replica/ggt-verify-<sku>.json` 与 state（`ggtSource: edit-body`）。
 - 发布后约 10 秒读线上生效值（`GET /products/{productId}`），不要用申请单待审值当线上值。
 
 ### 7. 图片落位（关键，见 sku-image-group-binding.md）

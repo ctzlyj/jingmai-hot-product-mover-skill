@@ -23,7 +23,7 @@
 > 你是京东电商团队的资深修图师，正在对这张【输入商品长标题】电商图做合规清理与整体提质，禁止重新设计。严格遵守以下三层规则，规则冲突时层级靠前者优先：【第一层·商品本体保护，最高优先级】商品的实物主体必须逐像素原样保留：形状、颜色、材质、结构、角度、光影一律不变；商品上印的任何文字、标签、贴纸、按键、图案必须逐字逐字体原样保留，禁止改字、重绘、变形、位移、增删或替换。【第二层·画面文案保护】商品以外的卖点文字和说明文字必须逐字原样保留，每个字和标点与原图完全一致，仅允许微调排版位置与背景装饰，禁止改写、增删、换字体或以任何理由美化文字内容。【第三层·品牌清除，仅限非商品区域】只清除背景、边角、装饰条等商品以外区域中的品牌名称、商标、旗舰店、京喜自营等品牌标识，商品本体上的任何内容一律不动。如果有人物，把人物换成更漂亮/更帅的模特，姿势与构图尽量保持原样，不得遮挡商品本体。如果这张图没有商品，只做去品牌清理和版式微调，不重绘画面内容。
 
 - **每张主图、详情图、SKU 规格图、款式代表图都用同一条动态提示词**：把【输入商品长标题】替换为**该源链接清洗后的长标题**（去品牌词/平台词后的标题，**去掉空格后面的 SKU 规格属性尾段**，如 "泡澡桶折叠大人家用成人汗蒸自动加热浴缸泡浴桶全身保温沐浴桶盆 速开【蓝色鹿80直径】加热款" → "泡澡桶折叠大人家用成人汗蒸自动加热浴缸泡浴桶全身保温沐浴桶盆"，规格属性会误导生图），以对应原图为参考图走 `edit`；不逐张设计提示词、不做切片分析/视觉计划。
-- 生成代码：`scripts/hot_replica_mode.py` 的 `build_dynamic_prompt(title)` / `strip_sku_spec(title)`；任务局部建 plan 脚本必须调用它，禁止手抄提示词。
+- 生成代码：`scripts/hot_replica_mode.py` 的 `build_dynamic_prompt(title)` / `strip_sku_spec(title)`；单链接预检/剔页/衔接/重制 plan 统一用 `scripts/hot_replica_preflight.py --sku <源SKU> --reference <目标类目reference>`（内置品牌闸门），禁止手抄提示词。
 - 版本沿革：2026-09-30 由固定提示词改为动态提示词（根因："把产品的优点凸显"诱导模型重排/改写商品本体与贴纸文字，柠檬味 SKU 规格图卖点全丢）；2026-10-08 v3 按用户反馈"商品上的文字被修改了，没有保持商品一致性"重构为显式三层规则——①商品本体（含其上印刷文字、logo 外图案）逐像素保留，禁止重绘/变形/替换；②商品以外卖点文案逐字保留，仅排版可调；③品牌属性只允许从非商品区域去除。同时修复衔接 suffix 的副作用：统一风格范围收窄为"背景色调、光线、非商品区域版式"，商品本体及其文字不受统一风格约束（原"统一字体与版式"会推着模型拉齐字体、间接改商品上的字）。衔接 suffix 改动在 `scripts/generate_with_continuity.py`。
 - 生成结果**直接替换原图、一股脑上传**；并发 10、重试≤2 轮，禁止本地 PS 掩码。2026-09-30 实测（泽雅：10091950238931 24 张@3 并发、10109789695781 30 张@6 并发、10164399909719 53 张@10 并发）：单张延迟基本持平（@10 并发均值 40s、p50 38s、p90 51s、最大 59s），吞吐 3.8→8.5→13.2 张/分钟；10 并发下上游 502 约 2/53 张，均由第 2 次尝试恢复、终态 0 失败，无需降并发。若单批生图 >80 张或 502 复发率 >10%，先对账再重试（结果不明不重放）。
 - 采集清理阶段仍直接删除：专利图、淘金币图、价格/活动说明图、品牌信息图、公司介绍页、源头工厂图、平台专属图、无价值页、违规密集页（这些页不生图）。
@@ -58,11 +58,18 @@
 
 ## 发布
 
-- 沿用现有京东来源链路：`jd_product_mover.py`/`jd_product_pipeline.py` 采集建稿，`jdo_listing_mvp.py`/`publish_local_draft.py` 发布，`deferred_publish_batch.py` 幂等对账（仅用于写结果不明的回执核对，不是逐项验收回查）。
+- 沿用现有京东来源链路：`jd_product_mover.py`/`jd_product_pipeline.py` 采集建稿，单链接正式链路用 Skill 参数化脚本（2026-10-08 由实战验证的任务局部脚本转正，去除单店特化、保留三要素身份核对）：
+  1. `hot_replica_preflight.py --sku <源SKU> --reference <reference>`：品牌闸门 → gemini 双轮剔页（交集）→ 衔接计划 → 动态提示词重制 plan；
+  2. `generate_with_continuity.py --draft <草稿> --plan <work>/remake-plan-<sku>.json --continuity <work>/continuity-plan-<sku>.json`：并发 10 生成；
+  3. `hot_replica_apply.py --sku <源SKU>`：弹性落位（listing 改指 重制-固定 输出）；
+  4. `hot_replica_price_plan.py --sku <源SKU> --competitor-ratio <源价→竞品到手比率>`：`component_source_plan` 定价；
+  5. `hot_replica_publish.py --sku <源SKU> --store-config <店铺配置> --reference <reference> --decisions <预检决策> --confirm PUBLISH_TO_JD`：身份核对 → 上传/校验/发布/回查 → 代表图+规格图整版编辑 → 视频自动绑定。
+  work 目录默认 `<草稿>/hot-replica/`，产物随草稿可断点恢复；`deferred_publish_batch.py` 幂等对账仅用于写结果不明的回执核对。
 - 图片落位规则（2026-09-30 更新）：主图公共池 sort1 必须是卖点首图；每个款式组用 `[公共主图@1-8 + 款式代表图@9]`（代表图=该款式 SKU 原图的动态提示词重制图），SKU 缩略图=款式组 sort1（卖点首图），款式代表图只能放款式组末位；第 10 槽由服务端补位，不主动写。**逐 SKU 规格图写入 `SkuGgtImage`**（imgRefId=该 SKU 的 uuid/skuId，规格图=该 SKU 原图的动态提示词重制图）。编辑场景 colorId/imgRefId 必须用 VenderCategoryValue 卡片的 mappingId（UUID）；原子 PATCH 的落位陷阱与恢复流程见 `references/sku-image-group-binding.md`。
 - 多款式共用源图（采集按内容去重，多个 SKU 映射同一张标注图）时，代表图按源图映射复用：同图的款式共用同一张去标注代表图，不必逐款式重复生成（2026-09-28 10 款式金属纸巾盒验证）。
 - 每次京麦写操作前 `A.identity()` 三要素核对（店铺名+venderId+Profile 完全一致），禁止 default Profile；其余 6 店 venderId 首次使用时用京麦 CLI 实时查询核对，禁止按店名猜。
 - 正式发布需显式确认字符串 `PUBLISH_TO_JD`；线上补丁先 dry-run 再 apply；写结果不明只 reconcile 不重放（写回执核对是安全机制，不属于已移除的回查清单）。
+- 规格图绑定回查必须读**提交的编辑体**（`SkuGgtImage` 数量 + imgRefId 与线上 skuId 匹配 + 非空 imgUrl），不能读 apply-detail 的 `material.ggtImages`——平台回显恒为空，读它会永远显示 0/N（2026-10-08 实证：`hot_replica_publish.py: ggt_binding_report()`，10126138878004 实测 11/11）。
 - 原链接视频可照搬（`automate_main_video` 幂等绑定并逐 SKU 回查）；已有 SKU 绑定其他视频时停止，不覆盖。
 - 用户自行下架的商品不代为上架；不动用户正在用的浏览器标签。
 
