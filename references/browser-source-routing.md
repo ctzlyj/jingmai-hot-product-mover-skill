@@ -43,6 +43,16 @@
 
 旧 `--bootstrap` 与 `--detail-dom` 输入兼容；同样新增商品ID一致性和非空真实SKU保护。来源捕获不会扩大店铺、类目、发布或生图授权。任何发布仍保留商家编码、定价、A/B一致性、状态幂等和独立回读。
 
+## 已实现：京东源逐SKU到手价接口采集
+
+需要京东源的逐SKU到手价（优惠后）时，在已登录任务页上下文内直接调用商详接口批量读取，不逐页切换商品。
+
+- 失败表现：PC价格区为 closed shadow DOM，DOM查询不稳定；逐SKU翻页读取约10次导航内触发软风控——先踢登录、后仅渲染页面骨架，暂停90秒不恢复。逐页方式94秒仍未读完9个SKU。
+- 解决方式：在已登录 WebCLI 任务页（item.jd.com 同源上下文）单次 `eval` 内循环对全部SKU调用 `https://api.m.jd.com/?functionId=pc_detailpage_wareBusiness&body=<URL编码JSON>&loginType=3&appid=pc-item-soa&clientVersion=1.0.0&client=pc`，`fetch(..., {credentials: 'include'})`。该参数组合无需 h5st 签名；`area` 取当前页面请求中的地址码。解析 `bestPromotion.purchasePrice` 为到手价、`price.p` 为京东价；`canGetCoupon` 可核对券规则。
+- 边界：请求必须复用已授权登录会话的页面上下文，不导出Cookie或复制登录资料；仅打开一次任务页，接口循环不产生页面导航。接口返回错误或缺失 `bestPromotion` 时停止并留证，不降级为快速翻页（风控触发路径），不按券面额猜其他SKU价格后当作已验证展示价。
+- 验证：2026-10-08 商品10234348547697全部9个SKU共3.3秒完成；`purchasePrice` 109/59/56 与页面展示（¥59到手价）、输入表格行到手价59及商品级满20减6券推算全部一致。淘宝侧等价方案见 `taobao-source-adapter.md` 的 `skuCouponInfoWithQuantity`。
+- 同一响应的 `colorSizeVO.colorSizeList`（维度1颜色 `buttons`）带 `no` 字段，即前台SKU展示顺序（主推款顺序）。生成或重排商品信息表时，SKU行必须按该顺序排列，不按采集器/`newColorSize` 返回顺序。商品级字段（标题、货号、商品属性、类目）只保留在排序后首行。2026-10-08 商品10234348547697验证：前台顺序 单人灰/黑/米→双人灰/黑/米→亲子灰/黑/米，与采集器默认顺序（亲子黑起）不同，重排后逐行回读校验通过。
+
 ## 验证与维护
 
 - 离线：`python -m unittest discover -s tests -p test_browser_source_read.py -v`，然后全套测试和干净分发测试。

@@ -537,7 +537,8 @@ def collect_source(url: str, client: HttpClient, max_workers: int = 8) -> dict[s
     sale_prop = {str(key): str(value) for key, value in (item.get("saleProp") or {}).items()}
     sale_values = [str(variant.get(key) or "") for variant in variants for key in sale_prop]
     title = base_title(str(product.get("skuName") or item.get("skuName") or ""), sale_values)
-    pop_pid = str(product.get("popPid") or "")
+    # 2026-10-09: self-operated products lack popPid; realSpuId works for desc API (verified on 100165442873).
+    pop_pid = str(product.get("popPid") or product.get("realSpuId") or "")
     if not pop_pid:
         raise MoverError("源商品缺少popPid，无法采集详情")
     detail_urls = parse_detail_urls(client.get_text(f"https://d.3.cn/desc/{pop_pid}"))
