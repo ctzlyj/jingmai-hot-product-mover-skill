@@ -1532,7 +1532,18 @@ def shared_image_audit(manifest: dict[str, Any], detail: dict[str, Any]) -> dict
                 })
         if 1 not in positions:
             errors.append(f"款式缺少专属首图：{alias}")
-        if len(images) != len(shared_items) + 1:
+        # 2026-10-09: after the full edit (rep@1 + shared@2..N per style), the
+        # platform appends one trailing slot whose imgUrl duplicates the first
+        # image (verified on 100165442873 and anchor 10036254103035: submitted
+        # 5 -> online 6, submitted 9 -> online 10). Accept that server-filled
+        # tail; any other extra or missing image is still an error.
+        server_filled_tail = False
+        if len(images) == len(shared_items) + 2:
+            ordered_online = sorted(images, key=lambda x: int(x.get("orderSort") or 0))
+            first_url = str(ordered_online[0].get("imgUrl") or "")
+            last_url = str(ordered_online[-1].get("imgUrl") or "")
+            server_filled_tail = bool(first_url) and first_url == last_url
+        if not server_filled_tail and len(images) != len(shared_items) + 1:
             errors.append(f"款式图片数量不正确：{alias} 当前{len(images)}张")
     if mismatches:
         errors.append(f"{len(mismatches)}个款式公共图片位置不一致")
@@ -1544,6 +1555,10 @@ def shared_image_audit(manifest: dict[str, Any], detail: dict[str, Any]) -> dict
         "expectedImagesPerStyle": len(shared_items) + 1,
         "urlComparisonPerformed": compare_urls,
         "imageCountDistribution": dict(image_count_distribution),
+        "serverFilledTailStyles": sum(
+            1 for alias in sorted(style_aliases)
+            if len(groups.get(online_ids.get(alias) or "", []) or []) == len(shared_items) + 2
+        ),
         "mismatchCount": len(mismatches),
         "mismatches": mismatches[:20],
         "errors": errors[:50],

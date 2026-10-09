@@ -643,6 +643,41 @@ class ProductMoverTests(unittest.TestCase):
         self.assertTrue(audit["ok"])
         self.assertEqual("multi_set", audit["mode"])
 
+    def test_online_audit_accepts_server_filled_tail_duplicate(self):
+        manifest = {
+            "skus": [{"styleAlias": "喜居宝地"}],
+            "images": [
+                {"role": "spu_main", "order": 1, "upload": {"imgUrl": "spu-first.png"}},
+                {"role": "spu_main", "order": 2, "upload": {"imgUrl": "shared.png"}},
+            ],
+        }
+        detail = {
+            "skuList": [{
+                "saleAttrs": [{
+                    "attrId": 1001080021,
+                    "attrValueAlias": "喜居宝地",
+                    "attrValues": "color-1",
+                }],
+            }],
+            "material": {
+                "mainImages": [{
+                    "uuid": "color-1",
+                    "imageInfoList": [
+                        {"orderSort": 1, "imgUrl": "style-first.png"},
+                        {"orderSort": 2, "imgUrl": "shared.png"},
+                        {"orderSort": 3, "imgUrl": "style-first.png"},
+                    ],
+                }],
+            },
+        }
+        audit = shared_image_audit(manifest, detail)
+        self.assertTrue(audit["ok"])
+        self.assertEqual(1, audit["serverFilledTailStyles"])
+
+        detail["material"]["mainImages"][0]["imageInfoList"][2]["imgUrl"] = "other.png"
+        audit = shared_image_audit(manifest, detail)
+        self.assertFalse(audit["ok"])
+
     def test_new_category_online_audit_uses_configured_style_attribute(self):
         manifest = {
             "product": {
