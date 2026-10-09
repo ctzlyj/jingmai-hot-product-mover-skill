@@ -180,12 +180,19 @@ def parse_detail_urls(payload: str) -> list[str]:
     data = json.loads(match.group(1))
     content = html_module.unescape(str(data.get("content") or ""))
     urls: list[str] = []
-    for found in re.finditer(r"(?:data-lazyload|src)\s*=\s*['\"]([^'\"]+)['\"]", content, re.I):
-        url = found.group(1).strip()
-        if url.startswith("//"):
-            url = "https:" + url
-        if url.startswith(("http://", "https://")) and url not in urls:
-            urls.append(url)
+    # 2026-10-09: SSD detail modules embed images as CSS background-image
+    # (url(...)) instead of <img src/data-lazyload>; verified on 100165442873.
+    patterns = [
+        r"(?:data-lazyload|src)\s*=\s*['\"]([^'\"]+)['\"]",
+        r"url\(\s*['\"]?([^'\")]+?)['\"]?\s*\)",
+    ]
+    for pattern in patterns:
+        for found in re.finditer(pattern, content, re.I):
+            url = found.group(1).strip()
+            if url.startswith("//"):
+                url = "https:" + url
+            if url.startswith(("http://", "https://")) and url not in urls:
+                urls.append(url)
     return urls
 
 

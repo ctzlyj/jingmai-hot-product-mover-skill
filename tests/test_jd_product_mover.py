@@ -318,6 +318,16 @@ class ProductMoverTests(unittest.TestCase):
         payload = 'showdesc({"content":"<img data-lazyload=\\"//img/a.jpg\\"><img src=\\"https://img/b.jpg\\"><img src=\\"//img/a.jpg\\">"})'
         self.assertEqual(["https://img/a.jpg", "https://img/b.jpg"], parse_detail_urls(payload))
 
+    def test_detail_image_css_background_url(self):
+        payload = (
+            'showdesc({"content":".M1{background-image:url(//img30.360buyimg.com/sku/jfs/a.jpg)}'
+            '.M2{background-image:url(\'https://img/b.jpg\')}"})'
+        )
+        self.assertEqual(
+            ["https://img30.360buyimg.com/sku/jfs/a.jpg", "https://img/b.jpg"],
+            parse_detail_urls(payload),
+        )
+
     def test_title_and_size_normalization(self):
         full = "山水挂画 50*100cm（适合客厅）"
         self.assertEqual("山水挂画", base_title(full, ["50*100cm（适合客厅）"]))
