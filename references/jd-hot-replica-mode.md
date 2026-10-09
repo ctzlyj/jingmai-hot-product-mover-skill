@@ -65,7 +65,10 @@
   4. `hot_replica_price_plan.py --sku <源SKU> --competitor-ratio <源价→竞品到手比率>`：`component_source_plan` 定价；
   5. `hot_replica_publish.py --sku <源SKU> --store-config <店铺配置> --reference <reference> --decisions <预检决策> --confirm PUBLISH_TO_JD`：身份核对 → 上传/校验/发布/回查 → 代表图+规格图整版编辑 → 视频自动绑定。
   work 目录默认 `<草稿>/hot-replica/`，产物随草稿可断点恢复；`deferred_publish_batch.py` 幂等对账仅用于写结果不明的回执核对。
-- 图片落位规则（2026-09-30 更新）：主图公共池 sort1 必须是卖点首图；每个款式组用 `[公共主图@1-8 + 款式代表图@9]`（代表图=该款式 SKU 原图的动态提示词重制图），SKU 缩略图=款式组 sort1（卖点首图），款式代表图只能放款式组末位；第 10 槽由服务端补位，不主动写。**逐 SKU 规格图写入 `SkuGgtImage`**（imgRefId=该 SKU 的 uuid/skuId，规格图=该 SKU 原图的动态提示词重制图）。编辑场景 colorId/imgRefId 必须用 VenderCategoryValue 卡片的 mappingId（UUID）；原子 PATCH 的落位陷阱与恢复流程见 `references/sku-image-group-binding.md`。
+- 图片落位先判模式（2026-10-09，根因：100165442873 是系列品，旧链路把入口款式的 5 图序列套给全部 7 款）：`hot_replica_mode.style_image_mode(source)` 逐 SKU 读取源页 `item.image`，比较各款式 pos2 之后的场景序列——全部相同为 shared，至少两个不同为 series。
+- **shared 模式**：公共池 sort1 是卖点首图；每款式组 `[公共主图@1-8 + 款式代表图@9]`，SKU 缩略图=卖点首图，代表图只放末位；第 10 槽由服务端补位，不主动写。
+- **series 模式**：公共池保留重制公共主图；每款式组提交 `[该款 SKU 规格图重制版@1 + 该款专属场景图重制版@2..N]`，禁止把入口款式的场景序列套给其他款式。同源场景图按 URL 去重复用，入口款与公共主图相同的场景直接复用 `SPU-MAIN-*`，不重复消耗生图额度；发布后 `series_image_binding_report()` 逐款逐位比对线上 `material.mainImages`，并要求各款序列互不相同（服务端复制首图的 N+1 补位尾槽可接受）。
+- 两种模式都**逐 SKU 规格图写入 `SkuGgtImage`**（imgRefId=该 SKU 的 uuid/skuId，规格图=该 SKU 原图的动态提示词重制图）。编辑场景 colorId/imgRefId 必须用 VenderCategoryValue 卡片的 mappingId（UUID）；原子 PATCH 的落位陷阱与恢复流程见 `references/sku-image-group-binding.md`。
 - 多款式共用源图（采集按内容去重，多个 SKU 映射同一张标注图）时，代表图按源图映射复用：同图的款式共用同一张去标注代表图，不必逐款式重复生成（2026-09-28 10 款式金属纸巾盒验证）。
 - 每次京麦写操作前 `A.identity()` 三要素核对（店铺名+venderId+Profile 完全一致），禁止 default Profile；其余 6 店 venderId 首次使用时用京麦 CLI 实时查询核对，禁止按店名猜。
 - 正式发布需显式确认字符串 `PUBLISH_TO_JD`；线上补丁先 dry-run 再 apply；写结果不明只 reconcile 不重放（写回执核对是安全机制，不属于已移除的回查清单）。

@@ -4,8 +4,9 @@
 Chain: PUBLISH_TO_JD confirmation -> store identity (name+venderId+profile,
 never default) -> vendor style start -> local validation -> upload -> JD
 validation -> publish -> verify -> upload style rep images -> full edit
-(rep@gallery slot 1 + annotated SkuGgtImage per SKU) -> apply-detail recheck
--> main video automation.
+(rep@gallery slot 1 or a series-mode per-style sequence + annotated
+SkuGgtImage per SKU) -> apply-detail recheck -> series live-position audit
+when applicable -> main video automation.
 
 Spec-image (ggt) verification reads the SUBMITTED EDIT BODY, not the
 apply-detail response: the platform's product-apply detail skuList carries no
@@ -63,6 +64,95 @@ def ggt_binding_report(edit_body: dict, apply_data: dict) -> dict:
             "source": "edit-body"}
 
 
+def series_image_binding_report(
+    listing: dict, uploaded: dict, plan: dict, apply_data: dict,
+) -> dict:
+    """Verify a series-mode product's per-style gallery from live apply data.
+
+    Expected position 1 is the style's remade SKU/spec image; positions 2..N are
+    that style's remade scene sequence. JD may add one server-filled trailing
+    slot copying position 1; that verified platform behavior is accepted, but
+    every submitted position must match exactly and style sequences must remain
+    distinct. Online group ids come from saleAttrs.attrValues (mappingId is not
+    reliable in apply-detail).
+    """
+    upload_url_by_key = {
+        str(i.get("imageKey") or ""): str((i.get("upload") or {}).get("imgUrl") or "")
+        for i in uploaded.get("images") or []
+    }
+    sku_url_by_skukey = {
+        str(i.get("skuKey") or ""): str((i.get("upload") or {}).get("imgUrl") or "")
+        for i in uploaded.get("images") or [] if i.get("role") == "sku_main"
+    }
+    expected: dict[str, dict[int, str]] = {}
+    for row in listing.get("skus") or []:
+        style = str(row.get("styleAlias") or "")
+        if style in expected:
+            continue
+        first = sku_url_by_skukey.get(str(row.get("skuKey") or ""))
+        if not first:
+            raise RuntimeError(f"系列品首图缺少上传回执：{style}")
+        sequence = {1: first}
+        for mapping in plan.get("styleSceneMapping") or []:
+            if str(mapping.get("style") or "") != style:
+                continue
+            target = str(mapping.get("imageKey") or "")
+            url = upload_url_by_key.get(target, "")
+            if not url:
+                raise RuntimeError(f"系列品款式图缺少上传回执：{style} {target}")
+            sequence[int(mapping.get("pos") or 0)] = url
+        expected[style] = sequence
+
+    online_gid_by_style: dict[str, str] = {}
+    for sku in apply_data.get("skuList") or []:
+        attrs = sku.get("saleAttrs") or []
+        alias = next((str(a.get("attrValueAlias") or "") for a in attrs
+                      if str(a.get("attrName") or "") in ("颜色", "款式", "规格")), "")
+        gid = next((str(a.get("attrValues") or "") for a in attrs
+                    if str(a.get("attrName") or "") in ("颜色", "款式", "规格")), "")
+        if alias and gid:
+            online_gid_by_style.setdefault(alias, gid)
+
+    groups = {
+        str(group.get("uuid") or ""): group.get("imageInfoList") or []
+        for group in (apply_data.get("material") or {}).get("mainImages") or []
+    }
+    styles: dict[str, dict] = {}
+    mismatch = 0
+    for style, sequence in expected.items():
+        gid = online_gid_by_style.get(style, "")
+        images = groups.get(gid) or []
+        positions = {int(i.get("orderSort") or 0): str(i.get("imgUrl") or "")
+                     for i in images}
+        pos_match = {pos: positions.get(pos) == url for pos, url in sequence.items()}
+        mismatch += sum(not ok for ok in pos_match.values())
+        tail_count = max(0, len(images) - len(sequence))
+        tail_is_first_copy = (
+            tail_count == 1
+            and positions.get(len(sequence) + 1) == sequence[1]
+        )
+        count_ok = len(images) == len(sequence) or tail_is_first_copy
+        if not count_ok:
+            mismatch += 1
+        if not gid:
+            mismatch += 1
+        styles[style] = {
+            "onlineGroup": gid,
+            "onlineCount": len(images),
+            "expectedCount": len(sequence),
+            "posMatch": pos_match,
+            "serverFilledTail": tail_is_first_copy,
+        }
+    distinct_sequences = len({
+        tuple(sequence[pos] for pos in sorted(sequence)) for sequence in expected.values()
+    })
+    ok = mismatch == 0 and distinct_sequences == len(expected) and len(expected) >= 2
+    return {
+        "ok": ok, "mode": "series", "styles": styles, "mismatch": mismatch,
+        "distinctSequences": distinct_sequences, "source": "apply-material-mainImages",
+    }
+
+
 def run_jdo_validation_with_retry(body_path, attempts=4, wait_seconds=40):
     """JD schema validation with retry for the known transient overload.
 
@@ -116,6 +206,21 @@ def build_edit_body(folder, listing, uploaded, publish_dir, plan, reps, apply_da
                             for i in listing.get("images") or [] if i.get("role") == "sku_main"}
     rep_by_path = {item["source"]: (reps.get(item["imageKey"]) or {}).get("imgUrl")
                    for item in plan.get("deannotate") or []}
+    series_mode = str(plan.get("styleImageMode") or "shared") == "series"
+    spu_url_by_key = {i["imageKey"]: (i.get("upload") or {}).get("imgUrl")
+                      for i in uploaded.get("images") or [] if i.get("role") == "spu_main"}
+    style_url_by_key = {i["imageKey"]: (i.get("upload") or {}).get("imgUrl")
+                        for i in uploaded.get("images") or [] if i.get("role") == "style_scene"}
+    style_sequence_by_style: dict[str, dict[int, str]] = {}
+    if series_mode:
+        for mapping in plan.get("styleSceneMapping") or []:
+            style = str(mapping.get("style") or "")
+            position = int(mapping.get("pos") or 0)
+            target = str(mapping.get("imageKey") or "")
+            url = spu_url_by_key.get(target) or style_url_by_key.get(target)
+            if not url:
+                raise RuntimeError(f"系列品款式图缺少上传回执：{style} pos={position} {target}")
+            style_sequence_by_style.setdefault(style, {})[position] = str(url)
 
     wsi = next(c for c in schema if c["componentCode"] == "WareSkuImg")
     pool = [img for img in wsi["value"] if str(prop(img.get("properties"), "colorId")) == "0000000000"]
@@ -126,6 +231,7 @@ def build_edit_body(folder, listing, uploaded, publish_dir, plan, reps, apply_da
     shared = pool[1:]
     entries = list(pool)
     seen_groups = set()
+    group_first_url: dict[str, str] = {}
 
     for idx, (sku_comp, row) in enumerate(zip(skus_comp, listing["skus"])):
         image_key = "SKU-MAIN-%03d" % (idx + 1)
@@ -137,14 +243,28 @@ def build_edit_body(folder, listing, uploaded, publish_dir, plan, reps, apply_da
         if key not in sku_info:
             raise RuntimeError(f"在线SKU匹配失败：style={row['styleAlias']} others={others}")
         sku_id, info_mid = sku_info[key]
-        if mid != info_mid:
+        # apply-detail may return an empty mappingId (verified 100165442873).
+        # The submitted VenderCategoryValue card is the authoritative group id.
+        if info_mid and mid != info_mid:
             raise RuntimeError(f"mappingId不一致：{key} body={mid} online={info_mid}")
-        rep_url = rep_by_path.get(sku_main_path_by_key.get(image_key))
-        if not rep_url:
+        if series_mode:
+            rep_url = ""
+        else:
+            rep_url = rep_by_path.get(sku_main_path_by_key.get(image_key))
+        if not series_mode and not rep_url:
             raise RuntimeError(f"缺少代表图：{image_key} {sku_main_path_by_key.get(image_key)}")
         ggt_url = ggt_by_key.get(image_key)
         if not ggt_url:
             raise RuntimeError(f"缺少规格图上传回执：{image_key}")
+        group_first_url.setdefault(mid, str(ggt_url))
+        group_pos1_url = group_first_url[mid]
+        if series_mode:
+            scene_sequence = style_sequence_by_style.get(str(row["styleAlias"])) or {}
+            expected_positions = {1, *scene_sequence}
+            if sorted(expected_positions) != list(range(1, len(expected_positions) + 1)):
+                raise RuntimeError(
+                    f"系列品款式图序列不连续：{row['styleAlias']} positions={sorted(expected_positions)}"
+                )
 
         smi = next(c for c in sku_comp["value"] if c["componentCode"] == "SkuMainImage")
         swapped = fixed = 0
@@ -152,7 +272,7 @@ def build_edit_body(folder, listing, uploaded, publish_dir, plan, reps, apply_da
             if str(prop(img.get("properties"), "orderSort")) == "1":
                 for p in img["properties"]:
                     if p["key"] == "imgUrl":
-                        p["value"] = rep_url
+                        p["value"] = group_pos1_url
                     if p["key"] in ("colorId", "imgRefId"):
                         p["value"] = mid
                 swapped += 1
@@ -171,8 +291,14 @@ def build_edit_body(folder, listing, uploaded, publish_dir, plan, reps, apply_da
                 {"key": "imgRefId", "value": sku_id}]}]})
         if mid not in seen_groups:
             seen_groups.add(mid)
-            for u, order in ([(rep_url, 1)] + [
-                    (str(prop(img.get("properties"), "imgUrl")), i + 2) for i, img in enumerate(shared)]):
+            if series_mode:
+                sequence = {1: group_pos1_url, **scene_sequence}
+                group_entries = [(sequence[position], position)
+                                 for position in range(1, len(sequence) + 1)]
+            else:
+                group_entries = ([(rep_url, 1)] + [
+                    (str(prop(img.get("properties"), "imgUrl")), i + 2) for i, img in enumerate(shared)])
+            for u, order in group_entries:
                 entries.append({"componentCode": "img", "inputType": "multiText", "properties": [
                     {"key": "colorId", "value": mid}, {"key": "imgUrl", "value": u},
                     {"key": "imgRefId", "value": mid}, {"key": "orderSort", "value": str(order)}]})
@@ -353,6 +479,16 @@ def main() -> int:
           "| source:", ggt["source"], "| online skus:", ggt["onlineSkuCount"])
     if ggt["missingUrl"] or ggt["unknownRef"] or ggt["bound"] != ggt["expected"]:
         raise RuntimeError(f"规格图绑定校验失败：{json.dumps(ggt, ensure_ascii=False)}")
+
+    if str(plan.get("styleImageMode") or "shared") == "series":
+        series = series_image_binding_report(listing, uploaded_json, plan, recheck)
+        (work / f"series-verify-{sku}.json").write_text(
+            json.dumps(series, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("SERIES_RECHECK styles:", len(series["styles"]),
+              "mismatch:", series["mismatch"],
+              "distinctSequences:", series["distinctSequences"])
+        if not series["ok"]:
+            raise RuntimeError(f"系列品主图序列校验失败：{json.dumps(series, ensure_ascii=False)}")
 
     source = mover.read_json(folder / "manifest.json")
     video = None

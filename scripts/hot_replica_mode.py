@@ -91,6 +91,40 @@ def brand_gate(reference: dict, category_label: str = "") -> dict:
     }
 
 
+def style_image_mode(source: dict) -> dict:
+    """Classify JD source main-image layout from per-SKU page image lists.
+
+    JD has two real layouts:
+      - shared: every style exposes the same gallery sequence (only the SKU
+        first/spec image differs);
+      - series: at least two styles expose different scene sequences after
+        position 1, so each style group must own its complete sequence.
+
+    The check deliberately ignores position 1: that position is represented by
+    the per-SKU spec image in both layouts. Comparing scene positions avoids
+    misclassifying ordinary shared-gallery products as series products.
+    2026-10-09 root cause: 100165442873 was a 7-style series product, but the
+    old chain copied the entry style's 5-image sequence to every group.
+    """
+    sequences: dict[str, list[str]] = {}
+    for variant in source.get("variants") or []:
+        attrs = variant.get("sourceAttributes") or {}
+        style = str(next(iter(attrs.values()), variant.get("sourceSku") or ""))
+        urls = [str(url) for url in (variant.get("sourceImageUrls") or []) if str(url)]
+        if style and len(urls) >= 2 and style not in sequences:
+            sequences[style] = urls
+    scene_sequences = {tuple(urls[1:]) for urls in sequences.values()}
+    mode = "series" if len(sequences) >= 2 and len(scene_sequences) >= 2 else "shared"
+    return {
+        "mode": mode,
+        "styleSequences": sequences,
+        "evidence": (
+            f"{len(sequences)} styles / {len(scene_sequences)} unique scene sequences"
+            if mode == "series" else "all captured styles share one scene sequence"
+        ),
+    }
+
+
 def square_pad_image(path: Path) -> tuple[int, int]:
     """Pad a generated image to exactly 1:1 (JD spu_main/sku_main rule).
 

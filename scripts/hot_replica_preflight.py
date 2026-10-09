@@ -4,7 +4,8 @@
 Chain position (single link): brand gate -> detail-page drop classification
 (gemini double pass, intersection only) -> seam continuity plan -> flexible
 dynamic-prompt remake plan (ALL spu_main images, per-source SKU spec images,
-style representative images).
+style representative images; series products also plan their per-style scene
+sequences).
 
 Formalized from the battle-tested task-local 62_preflight_and_plan.py
 (2026-09-28..30 zeya batches). Store-specific fields are removed; the target
@@ -249,22 +250,57 @@ def main():
     seen = {}
     for im in sku_mains:
         seen.setdefault(im["localPath"], im["imageKey"])
+    style_scenes = sorted([i for i in listing["images"] if i.get("role") == "style_scene"],
+                          key=lambda x: (str(x.get("imageKey") or "")))
+    main_source_to_key = {i["localPath"]: i["imageKey"]
+                          for i in listing["images"] if i.get("role") == "spu_main"}
+    scene_source_to_key: dict[str, str] = {}
+    style_scene_mapping: list[dict] = []
+    for row in listing["skus"]:
+        style = str(row.get("styleAlias") or "")
+        if any(m.get("style") == style for m in style_scene_mapping):
+            continue
+        style_order = int(row.get("styleOrder") or 0)
+        for item in style_scenes:
+            if not str(item.get("imageKey") or "").startswith(f"STYLE-{style_order:02d}-POS"):
+                continue
+            source_path = str(item.get("localPath") or "")
+            if source_path in main_source_to_key:
+                target_key = main_source_to_key[source_path]
+            elif source_path in scene_source_to_key:
+                target_key = scene_source_to_key[source_path]
+            else:
+                target_key = str(item["imageKey"])
+                order += 1
+                images.append({"imageKey": target_key, "role": "style_scene", "order": order,
+                               "source": source_path,
+                               "output": f"重制-固定/款式组/{target_key}.png",
+                               "prompt": prompt_dynamic})
+                scene_source_to_key[source_path] = target_key
+            position = int(item.get("order") or 0)
+            style_scene_mapping.append({"style": style, "pos": position, "imageKey": target_key})
+    series_mode = bool(style_scene_mapping)
     deannotate = []
     for n, (src, key) in enumerate(seen.items(), 1):
         out = f"重制-固定/SKU图/SKU图{n}.png"
         images.append({"imageKey": f"SKU-MAIN-{n:03d}", "source": src, "output": out,
                        "prompt": prompt_dynamic})
-        deannotate.append({"imageKey": f"SKU-REP-{n:03d}", "source": out, "output": out,
-                           "prompt": prompt_dynamic})
+        if not series_mode:
+            deannotate.append({"imageKey": f"SKU-REP-{n:03d}", "source": out, "output": out,
+                               "prompt": prompt_dynamic})
     plan = {"task": f"{SKU} hot-replica (dynamic prompt + continuity)",
             "title": listing["product"]["title"], "mode": "dynamic-prompt+continuity",
+            "styleImageMode": "series" if series_mode else "shared",
+            "styleSceneMapping": style_scene_mapping,
             "promptTitle": prompt_title,
             "droppedDetails": dropped_details,
             "skuMainPolicy": "dynamic-prompt-regenerate",
             "images": images, "deannotate": deannotate}
     (work / f"remake-plan-{SKU}.json").write_text(
         json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"plan: mains={len(mains_src)} details={len(kept_idx)} sku={len(seen)} "
+    print(f"plan: styleImageMode={plan['styleImageMode']} "
+          f"styleScenes={len(scene_source_to_key)} styleSlots={len(style_scene_mapping)} "
+          f"mains={len(mains_src)} details={len(kept_idx)} sku={len(seen)} "
           f"reps={len(deannotate)} drops={len(dropped_details)}")
     print(f"NEXT: generate_with_continuity.py --draft {folder} --plan "
           f"{work / ('remake-plan-' + SKU + '.json')} --continuity "

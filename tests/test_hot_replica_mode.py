@@ -33,6 +33,25 @@ def test_brand_gate_requires_minus_one():
     assert hotmode.brand_gate({"brands": [{"brandId": 5}]})["ok"] is False
 
 
+def test_style_image_mode_detects_series_and_shared():
+    series = hotmode.style_image_mode({"variants": [
+        {"sourceSku": "1", "sourceAttributes": {"颜色": "A"},
+         "sourceImageUrls": ["a1", "a2", "a3"]},
+        {"sourceSku": "2", "sourceAttributes": {"颜色": "B"},
+         "sourceImageUrls": ["b1", "b2", "b3"]},
+    ]})
+    assert series["mode"] == "series"
+    assert series["evidence"] == "2 styles / 2 unique scene sequences"
+
+    shared = hotmode.style_image_mode({"variants": [
+        {"sourceSku": "1", "sourceAttributes": {"颜色": "A"},
+         "sourceImageUrls": ["a1", "same2", "same3"]},
+        {"sourceSku": "2", "sourceAttributes": {"颜色": "B"},
+         "sourceImageUrls": ["b1", "same2", "same3"]},
+    ]})
+    assert shared["mode"] == "shared"
+
+
 def test_square_pad_image(tmp_path):
     # 3:4 image, vertical gradient background: padding must keep every row.
     p = tmp_path / "sku.png"

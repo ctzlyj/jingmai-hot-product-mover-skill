@@ -35,7 +35,7 @@
   > 你是京东电商团队的资深修图师，正在对这张【输入商品长标题】电商图做合规清理与整体提质，禁止重新设计。严格遵守以下三层规则，规则冲突时层级靠前者优先：【第一层·商品本体保护，最高优先级】商品的实物主体必须逐像素原样保留：形状、颜色、材质、结构、角度、光影一律不变；商品上印的任何文字、标签、贴纸、按键、图案必须逐字逐字体原样保留，禁止改字、重绘、变形、位移、增删或替换。【第二层·画面文案保护】商品以外的卖点文字和说明文字必须逐字原样保留，每个字和标点与原图完全一致，仅允许微调排版位置与背景装饰，禁止改写、增删、换字体或以任何理由美化文字内容。【第三层·品牌清除，仅限非商品区域】只清除背景、边角、装饰条等商品以外区域中的品牌名称、商标、旗舰店、京喜自营等品牌标识，商品本体上的任何内容一律不动。如果有人物，把人物换成更漂亮/更帅的模特，姿势与构图尽量保持原样，不得遮挡商品本体。如果这张图没有商品，只做去品牌清理和版式微调，不重绘画面内容。
   （2026-10-08 v3：显式三层规则版，修复商品本体文字被改写问题；版本沿革与根因见 `jd-hot-replica-mode.md`。）
 - 【输入商品长标题】= 该源链接清洗后的长标题（去品牌词/平台词），**并去掉空格后面的 SKU 规格属性尾段**（如 "泡澡桶折叠…沐浴桶盆 速开【蓝色鹿80直径】加热款" → "泡澡桶折叠…沐浴桶盆"，用 `strip_sku_spec(title)`）；规格属性会误导生图。
-- **主图 9 张**：SPU 公共池（从源主图池按购买路径选取 9 张原图再逐张重制）。
+- **主图先判 shared/series 模式**：采集阶段逐 SKU 保留源页 `item.image` 序列，`hot_replica_mode.style_image_mode(source)` 比较各款式 pos2 之后的场景序列。shared 只重制公共主图池；series 额外把每款式专属场景原图落到 `款式组原图/`，preflight 为每款生成 `styleSceneMapping`（同图/与公共主图相同的场景复用，不重复生图）。
 - **SKU 规格图**：源 SKU 标注图逐张重制，替换原图后按 SKU 上传到 `SkuGgtImage`。
 - **款式代表图**：该款式 SKU 原图的重制图，放款式组末位（@9）。
 - 生成命令带 `--continuity continuity-plan-<sku>.json`：每张详情图注入统一风格锚点，连续边界图额外带边缘契约 + 邻居参考图（仅限风格，严禁搬邻居内容）；并发 10 不变。
@@ -64,13 +64,13 @@
 - `validate-jd` 零违规 → `publish --confirm PUBLISH_TO_JD`（或 `edit-product --confirm EDIT_EXISTING_PRODUCT`）。
 - 单链接整链正式命令（替代旧任务局部 63/24 号脚本，2026-10-08 用 10126138878004 全链路实测）：
   1. `python scripts/hot_replica_apply.py --sku <源SKU>`：弹性落位，listing 改指 重制-固定 输出；
-  2. `python scripts/hot_replica_publish.py --sku <源SKU> --store-config config/<店铺>.store.json --reference config/<店铺>-<类目>.reference.json --decisions <预检决策.json> --confirm PUBLISH_TO_JD`：三要素身份核对 → 本地预检 → 上传 → 京东校验（99905030004 瞬时过载自动重试）→ 发布 → 独立回查 → 代表图上传 → 整版编辑（rep@gallery + 逐 SKU `SkuGgtImage`）→ 视频自动绑定。
+  2. `python scripts/hot_replica_publish.py --sku <源SKU> --store-config config/<店铺>.store.json --reference config/<店铺>-<类目>.reference.json --decisions <预检决策.json> --confirm PUBLISH_TO_JD`：三要素身份核对 → 本地预检 → 上传 → 京东校验（99905030004 瞬时过载自动重试）→ 发布 → 独立回查 → 代表图上传 → 整版编辑（rep@gallery / series 每款独立序列 + 逐 SKU `SkuGgtImage`）→ 线上逐位回查 → 视频自动绑定。
 - 规格图绑定回查读**提交的编辑体**（`SkuGgtImage` + imgRefId 与线上 skuId 匹配），不读 apply-detail 的 `material.ggtImages`（平台回显恒为空，读它永远 0/N）；结果写 `hot-replica/ggt-verify-<sku>.json` 与 state（`ggtSource: edit-body`）。
 - 发布后约 10 秒读线上生效值（`GET /products/{productId}`），不要用申请单待审值当线上值。
 
 ### 7. 图片落位（关键，见 sku-image-group-binding.md）
 
-- 主图画廊：公共池 9 张，sort1 必须是卖点首图；每款式组 `[公共主图@1-8 + 去标注代表图@9]`（第 10 槽服务端自动补，不必控）。
+- 主图画廊先判 shared/series：shared 用公共池 9 张 + 每款式组 `[公共主图@1-8 + 去标注代表图@9]`；series 用公共池 + 每款式组 `[该款 SKU 规格图重制版@1 + 该款专属场景图重制版@2..N]`。第 N+1 槽服务端自动补首图副本，不算错误。
 - SKU 缩略图 logo = 款式组 sort1（卖点首图）；去标注代表图只放款式组末位。
 - **逐 SKU 规格图 `SkuGgtImage`**：imgUrl=该 (款式,尺码) 的源标注图，imgRefId=该 SKU 的 uuid（编辑场景即 skuId）。随 SKUS 组件整版编辑一次写完全部 SKU。
 - 颜色组绑定 colorId/imgRefId 必须用 VenderCategoryValue 卡片 mappingId（UUID）；apply-detail 回显为空时以编辑体卡片为准。
@@ -98,6 +98,7 @@
 - 分批补 SKU 时平台库存按增量累加：编辑体不带库存组件，需要调库存走专用接口按「目标-当前」差值提交。
 - 重量必填类目：源 `weight=0` 时按该品类常规值填写，并在最终汇报列明待用户确认。
 - 多款式共用源图（采集按内容去重）时，代表图按源图映射复用，同图款式共用同一张去标注代表图；10 款式组整版编辑一次提交（公共池 9 + 每组 10）已验证。
+- 系列品不能套 shared 模板：不同款式 pos2..N 场景序列不同时必须逐款式重制/落位；只复用入口款式序列会让所有 SKU 后面的主图重复（2026-10-09 100165442873 复现，7 款独立序列修复后线上 mismatch=0）。
 - 主图视频可在发布后直调 `jd_product_pipeline.automate_main_video`（任务局部 state 文件，幂等上传→转码→逐 SKU 绑定→关系审核），无需跑完整 run 管线。
 - SKU 规格值禁止「尺寸如图」类引导语（首发布被驳回根因）：逐 SKU 写具体尺寸/配置文案，不要用"如图/见图"表述。
 - 详情源图单张 >3MB 时，collect 用任务局部容错 wrapper（monkeypatch `mover.save_png` 做降采样/量化），保留 3MB 上传限制，不改 Skill 本体。

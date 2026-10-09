@@ -3,9 +3,10 @@
 
 Repoints the draft listing at the remade (重制-固定) outputs from the remake
 plan produced by hot_replica_preflight.py: all plan mains + kept details +
-SKU spec images, flexible main count. Upload checkpoints are invalidated when
-the image list changes. Formalized from the battle-tested task-local
-63_apply_fast.py; no store-specific fields.
+SKU spec images, flexible main count; series products also repoint their
+per-style scene images. Upload checkpoints are invalidated when the image list
+changes. Formalized from the battle-tested task-local 63_apply_fast.py; no
+store-specific fields.
 """
 import argparse, json, pathlib, sys
 sys.stdout.reconfigure(encoding="utf-8")
@@ -72,13 +73,24 @@ def main() -> int:
     if len(repurposed) != len(sku_out):
         raise RuntimeError(f"计划中存在未被 listing 引用的 SKU 源图：{sorted(set(sku_out) - repurposed)}")
 
-    listing["images"] = mains + details + sku_mains
+    style_plan_by_key = {i["imageKey"]: i for i in plan["images"] if i.get("role") == "style_scene"}
+    style_scenes, seen_style_keys = [], set()
+    for mapping in plan.get("styleSceneMapping") or []:
+        target = str(mapping.get("imageKey") or "")
+        if target.startswith("SPU-MAIN-") or target in seen_style_keys or target not in style_plan_by_key:
+            continue
+        seen_style_keys.add(target)
+        style_scenes.append(entry(style_plan_by_key[target], "style_scene"))
+
+    listing["images"] = mains + details + style_scenes + sku_mains
     up = folder / ".pipeline" / "listing.uploaded.json"
     if up.exists():
         up.unlink()
         print("removed stale upload checkpoint")
     mover.write_json(listing_path, listing)
-    print(f"{a.sku} images now: mains={len(mains)} details={len(details)} sku={len(sku_mains)}")
+    print(f"{a.sku} images now: styleImageMode={plan.get('styleImageMode') or 'shared'} "
+          f"styleScenes={len(style_scenes)} mains={len(mains)} "
+          f"details={len(details)} sku={len(sku_mains)}")
     return 0
 
 

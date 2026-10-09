@@ -50,4 +50,10 @@
 整版编辑生效后服务端会在 N+1 槽自动补位并复制组首图（rep），该尾槽不主动写、也不算错误；
 `shared_image_audit` 已接受该形态（`serverFilledTailStyles` 字段），其他多余或缺张图仍报错。
 
+### 系列品模式（2026-10-09，100165442873 实测）
+
+- 判定：`hot_replica_mode.style_image_mode(source)` 逐 SKU 读取源页 `item.image`，比较各款式 pos2 之后的场景序列；至少两个款式序列不同即为 series。
+- 落位：公共池保留重制公共主图；每款式组提交 `[该款 SKU 规格图重制版@1, 该款专属场景图重制版@2..N]`。同源场景图按 URL 去重，入口款与公共主图相同的场景复用 `SPU-MAIN-*`。
+- 回查：`series_image_binding_report(listing, uploaded, plan, apply_data)` 用 `saleAttrs.attrValues` 定位线上款式组，逐位比对 `material.mainImages`；允许服务端在 N+1 复制首图的补位尾槽，但要求各款序列互不相同。实测 7 款：mismatch=0、distinctSequences=7、7 组均有补位尾槽。
+
 实测基线：4 件无品牌 53207 坐便椅按上述结构整版编辑通过并在线生效（款式组首图=公共池卖点首图，末图=去标注代表图）。5 件已挂品牌 53171 纸巾盒的首图顺序修正在当前接口持续 `draftComputeStatus=3` 拒绝且无文案；千里江山的最小文本/图片替换也两次复现拒绝。遇到同状态即停止重复提交并报告平台侧阻塞，不为继续试探消耗调用。

@@ -534,10 +534,19 @@ def collect_source(url: str, client: HttpClient, max_workers: int = 8) -> dict[s
     pages: dict[str, dict[str, Any]] = {input_sku: first}
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(sku_ids))) as executor:
         futures = [executor.submit(fetch_variant, sku_id) for sku_id in sku_ids if sku_id != input_sku]
-        for future in concurrent.futures.as_completed(futures):
-            sku_id, parsed = future.result()
-            pages[sku_id] = parsed
+    for future in concurrent.futures.as_completed(futures):
+        sku_id, parsed = future.result()
+        pages[sku_id] = parsed
     prices = {sku_id: str(pages[sku_id].get("price") or "") for sku_id in sku_ids}
+    image_sequences = {
+        sku_id: [
+            jd_image_url(str(path), square=(position == 1))
+            for position, path in enumerate(
+                (pages[sku_id].get("item") or {}).get("image") or [], start=1
+            )
+        ]
+        for sku_id in sku_ids
+    }
     if any(not re.fullmatch(r"\d+(?:\.\d+)?", price) for price in prices.values()):
         missing = [sku_id for sku_id, price in prices.items() if not re.fullmatch(r"\d+(?:\.\d+)?", price)]
         raise MoverError(f"逐SKU价格缺失：{missing}")
@@ -595,6 +604,7 @@ def collect_source(url: str, client: HttpClient, max_workers: int = 8) -> dict[s
                 "sourcePrice": prices[sku_id],
                 "sourceAttributes": {name: str(variant.get(key) or "") for key, name in sale_prop.items()},
                 "sourceImageUrl": jd_image_url(str(variant.get("imagePath") or product.get("imageurl") or ""), square=True),
+                "sourceImageUrls": image_sequences[sku_id],
             }
             for sku_id, variant in zip(sku_ids, variants)
         ],
@@ -604,7 +614,12 @@ def collect_source(url: str, client: HttpClient, max_workers: int = 8) -> dict[s
 def materialize(source: dict[str, Any], output_root: Path, client: HttpClient) -> Path:
     safe_title = re.sub(r'[<>:"/\\|?*]', "", source["title"])[:60].strip() or source["sourceSku"]
     folder = output_root / f"{source['sourceSku']}_{safe_title}"
-    for name in ("主图", "SKU图", "详情图", "视频"):
+    from hot_replica_mode import style_image_mode
+
+    style_layout = style_image_mode(source)
+    source["styleImageMode"] = style_layout
+    source["styleSceneImagesBySku"] = {}
+    for name in ("主图", "SKU图", "详情图", "视频", *(["款式组原图"] if style_layout["mode"] == "series" else [])):
         (folder / name).mkdir(parents=True, exist_ok=True)
 
     main_paths: list[str] = []
@@ -663,6 +678,22 @@ def materialize(source: dict[str, Any], output_root: Path, client: HttpClient) -
     source["detailImages"] = detail_paths
     for variant in source["variants"]:
         variant["skuImage"] = sku_image_by_url[variant["sourceImageUrl"]]
+    if style_layout["mode"] == "series":
+        for variant in source["variants"]:
+            style = safe_sale_alias(str(next(iter((variant.get("sourceAttributes") or {}).values()), variant["sourceSku"])))
+            scene_paths: dict[str, str] = {}
+            for position, url in enumerate(variant.get("sourceImageUrls") or [], start=1):
+                if position == 1:
+                    continue
+                relative = Path("款式组原图") / f"{style}-pos{position}.png"
+                destination = folder / relative
+                if not destination.exists():
+                    save_png(client.get_bytes(url), destination, square=False)
+                scene_paths[str(position)] = relative.as_posix()
+            existing = source["styleSceneImagesBySku"].get(variant["sourceSku"])
+            if existing is not None and existing != scene_paths:
+                raise MoverError(f"同一款式不同SKU的主图序列不一致：{variant['sourceSku']}")
+            source["styleSceneImagesBySku"][variant["sourceSku"]] = scene_paths
     source["validation"] = {"status": "passed", "errors": [], "warnings": []}
     write_json(folder / "manifest.json", source)
     return folder
@@ -831,6 +862,7 @@ def build_listing(
             "freightTemplateId": defaults["freightTemplateId"],
             "freightTemplateLabel": defaults["freightTemplateLabel"],
             "mainImageMode": defaults["mainImageMode"],
+            "styleImageMode": (source.get("styleImageMode") or {}).get("mode", "shared"),
             "includeSizeSaleAttribute": len(sale_names) >= 2,
             "detailHtml": "",
             "defaultMediaCategoryId": reference["media"]["defaultCategoryId"],
@@ -900,6 +932,25 @@ def build_listing(
             "mediaCategoryId": reference["media"]["defaultCategoryId"],
             "upload": {"status": "pending", "imgId": "", "imgUrl": ""},
         })
+    if str(listing["product"].get("styleImageMode") or "shared") == "series":
+        scenes_by_style: dict[str, dict[str, str]] = {}
+        for item in prepared:
+            if item["style"] not in scenes_by_style:
+                scenes_by_style[item["style"]] = (
+                    source.get("styleSceneImagesBySku", {}).get(item["sourceSku"]) or {}
+                )
+        for style_order, style in enumerate(style_names, start=1):
+            for position, path in sorted(
+                ((int(pos), path) for pos, path in scenes_by_style.get(style, {}).items()),
+                key=lambda pair: pair[0],
+            ):
+                listing["images"].append({
+                    "imageKey": f"STYLE-{style_order:02d}-POS{position:02d}",
+                    "productKey": product_key, "skuKey": "", "role": "style_scene",
+                    "localPath": path, "order": position,
+                    "mediaCategoryId": reference["media"]["defaultCategoryId"],
+                    "upload": {"status": "pending", "imgId": "", "imgUrl": ""},
+                })
     for index, path in enumerate(source["detailImages"], start=1):
         listing["images"].append({
             "imageKey": f"DETAIL-{index:03d}", "productKey": product_key, "skuKey": "",
