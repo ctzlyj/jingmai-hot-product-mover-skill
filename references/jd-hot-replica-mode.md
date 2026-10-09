@@ -70,7 +70,7 @@
 - 每次京麦写操作前 `A.identity()` 三要素核对（店铺名+venderId+Profile 完全一致），禁止 default Profile；其余 6 店 venderId 首次使用时用京麦 CLI 实时查询核对，禁止按店名猜。
 - 正式发布需显式确认字符串 `PUBLISH_TO_JD`；线上补丁先 dry-run 再 apply；写结果不明只 reconcile 不重放（写回执核对是安全机制，不属于已移除的回查清单）。
 - 规格图绑定回查必须读**提交的编辑体**（`SkuGgtImage` 数量 + imgRefId 与线上 skuId 匹配 + 非空 imgUrl），不能读 apply-detail 的 `material.ggtImages`——平台回显恒为空，读它会永远显示 0/N（2026-10-08 实证：`hot_replica_publish.py: ggt_binding_report()`，10126138878004 实测 11/11）。
-- 原链接视频可照搬（`automate_main_video` 幂等绑定并逐 SKU 回查）；已有 SKU 绑定其他视频时停止，不覆盖。
+- 原链接视频可照搬（`automate_main_video` 幂等绑定并逐 SKU 回查），平台限制 5–90 秒；超长源视频（如 141 秒）裁前 90 秒副本再上传，原文件保留。已有 SKU 绑定其他视频时停止，不覆盖。
 - 用户自行下架的商品不代为上架；不动用户正在用的浏览器标签。
 
 ## 定价规则（用户已确认，2026-09-28 泡澡桶批次验证）
