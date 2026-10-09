@@ -24,6 +24,7 @@ from jd_product_mover import (  # noqa: E402
     parse_detail_urls,
     parse_video_response,
     required_sku_attribute_values,
+    safe_filename_component,
     safe_sale_alias,
     source_sku_from_url,
     split_style_and_size,
@@ -462,6 +463,15 @@ class ProductMoverTests(unittest.TestCase):
         alias = safe_sale_alias(value)
         self.assertIn("/", safe_sale_alias("衣/橱柜"))
         self.assertLessEqual(sum(1 if character.isascii() else 2 for character in alias), 48)
+
+    def test_filename_component_strips_windows_illegal_characters(self):
+        self.assertEqual(
+            "灰色小号【3个装】12cm12cm",
+            safe_filename_component("灰色小号【3个装】12cm*12cm", "fallback"),
+        )
+        self.assertIn("/", safe_sale_alias("衣/橱柜"))
+        self.assertNotIn("/", safe_filename_component("衣/橱柜", "fallback"))
+        self.assertEqual("100225013811", safe_filename_component("*?*", "100225013811"))
 
     def test_listing_title_removes_source_brand_and_respects_jd_limit(self):
         source = "艺诚轩家规家训挂图家风挂画新中式书法装饰客厅书房背景墙卷轴壁画装饰"

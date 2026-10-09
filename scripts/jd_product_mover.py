@@ -234,6 +234,11 @@ def safe_sale_alias(value: str) -> str:
     return result
 
 
+def safe_filename_component(value: str, fallback: str) -> str:
+    result = re.sub(r'[<>:"/\\|?*]', "", value).strip()
+    return result or fallback
+
+
 def disambiguate_colliding_sizes(rows: list[dict[str, Any]]) -> None:
     counts: dict[tuple[str, str], int] = {}
     for row in rows:
@@ -681,11 +686,12 @@ def materialize(source: dict[str, Any], output_root: Path, client: HttpClient) -
     if style_layout["mode"] == "series":
         for variant in source["variants"]:
             style = safe_sale_alias(str(next(iter((variant.get("sourceAttributes") or {}).values()), variant["sourceSku"])))
+            style_filename = safe_filename_component(style, str(variant["sourceSku"]))
             scene_paths: dict[str, str] = {}
             for position, url in enumerate(variant.get("sourceImageUrls") or [], start=1):
                 if position == 1:
                     continue
-                relative = Path("款式组原图") / f"{style}-pos{position}.png"
+                relative = Path("款式组原图") / f"{style_filename}-pos{position}.png"
                 destination = folder / relative
                 if not destination.exists():
                     save_png(client.get_bytes(url), destination, square=False)
