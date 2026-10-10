@@ -44,7 +44,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 - 已有状态文件：从已完成阶段恢复；详情暂不可查时先查申请单状态，禁止把合规驳回误判为传播延迟，也禁止因详情传播或视频审核等待而重复创建商品。
 - 淘宝来源：先生成 `taobao-mover/v1` manifest，复用现有图片、定价、发品、视频和审计链路；MVP 默认停在 `LOCAL_DRAFT`。
 - 淘宝/天猫草稿的专利图、淘金币、活动价格说明和平台专属页直接删，近重复详情可经审核后删减；除此之外不做保真式排版/双图比对验收。
-- 视觉检测仅保留**生图前详情页衔接预检**（`scripts/seam_preflight.py`，gemini-3.8-flash-official 源图预检，详见 `references/jd-hot-replica-mode.md`「详情页衔接」节）；生图/修图后不做品牌残留扫描、VLM 审图、质量门禁或逐张视觉验收，生成结果直接替换原图上传。爆款复刻生图统一使用 `scripts/hot_replica_mode.py` 生成的动态提示词 + `scripts/generate_with_continuity.py` 注入衔接计划（gpt-image-2.5 新链路）。返工触发条件：平台驳回上架（按驳回原因重制）、用户明确指出详情页断层（重制异类图单张）。`image_quality_gate.py` 仅保留文件技术校验辅助（编码/尺寸/路径绑定）。
+- 视觉检测仅保留**生图前详情页衔接预检**（`scripts/seam_preflight.py`，gemini-3.8-flash-official 源图预检，gemini 无法识图时改用 agent 自带视觉模型，详见 `references/jd-hot-replica-mode.md`「详情页衔接」节）；生图/修图后不做品牌残留扫描、VLM 审图、质量门禁或逐张视觉验收，生成结果直接替换原图上传。爆款复刻生图统一使用 `scripts/hot_replica_mode.py` 生成的动态提示词 + `scripts/generate_with_continuity.py` 注入衔接计划（gpt-image-2.5 新链路）；提示词原文为用户定稿，禁止擅自改写。返工触发条件：平台驳回上架（按驳回原因重制）、用户明确指出详情页断层（重制异类图单张）。`image_quality_gate.py` 仅保留文件技术校验辅助（编码/尺寸/路径绑定）。
 - 淘宝真实 SKU 超过当前类目 `skuBindThresholdNum` 时，按完整款式组自动拆成最少且尽量均衡的多个商品；一次发布授权覆盖该次拆分，不逐件打断确认，全部结束后统一汇报各商品 ID、款式和 SKU 数。
 
 ## 旧普通搬运前判重门槛（不适用京东爆款复刻表格逐链接模式）

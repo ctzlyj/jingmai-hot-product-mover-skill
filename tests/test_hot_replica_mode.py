@@ -14,18 +14,11 @@ def test_dynamic_prompt_strips_spec_tail():
     assert hotmode.strip_sku_spec(title) == \
         "泡澡桶折叠大人家用成人汗蒸自动加热浴缸泡浴桶全身保温沐浴桶盆"
     assert "速开" not in hotmode.build_dynamic_prompt(title)
-
-
-def test_dynamic_prompt_v3_three_layers():
-    # 2026-10-08 agreed three-layer contract (product body / off-product copy /
-    # brand removal), replacing the ambiguous "优化+优点凸显" wording.
-    prompt = hotmode.build_dynamic_prompt("泡澡桶折叠大人家用成人汗蒸自动加热浴缸泡浴桶全身保温沐浴桶盆")
-    assert "泡澡桶折叠大人家用成人汗蒸自动加热浴缸泡浴桶全身保温沐浴桶盆" in prompt
-    assert "第一层·商品本体保护" in prompt and "逐像素原样保留" in prompt
-    assert "第二层·画面文案保护" in prompt and "逐字原样保留" in prompt
-    assert "第三层·品牌清除，仅限非商品区域" in prompt
-    # old root-cause wording must stay out
-    assert "优化这张" not in prompt and "优点凸显" not in prompt
+    # 2026-10-10 user-confirmed final wording; do not rewrite without user
+    # instruction (the 2026-10-08 three-layer variant was reverted).
+    assert hotmode.build_dynamic_prompt(title).startswith(
+        "你是一个京东电商团队的专业美工，优化这张【泡澡桶折叠大人家用成人汗蒸自动加热浴缸泡浴桶全身保温沐浴桶盆】电商图，"
+    )
 
 
 def test_brand_gate_requires_minus_one():

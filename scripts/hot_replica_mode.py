@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Shared rules for the JD hot-replica mode (2026-10-08 user-confirmed v3).
+"""Shared rules for the JD hot-replica mode (2026-09-30 user-confirmed v2).
 
 1. Dynamic image prompt: every image (main / detail / SKU spec / style
    representative) is remade with ONE prompt built from the source link's
    cleaned long title. The trailing SKU-spec segment after the first space is
    stripped (e.g. "...沐浴桶盆 速开【蓝色鹿80直径】加热款" -> "...沐浴桶盆")
-   because spec attributes mislead generation. v3 (2026-10-08) rewrites the
-   prompt into an explicit three-layer contract agreed with the user after
-   "商品上的文字被修改" feedback: (1) product body incl. its printed text is
-   pixel-identical, never redrawn; (2) off-product selling copy preserved
-   verbatim, layout-only adjustments; (3) brand attributes removed only from
-   non-product areas. People must still be replaced.
+   because spec attributes mislead generation. Product consistency and text
+   selling points must be preserved; people must be replaced.
+   2026-10-10: user re-confirmed THIS exact wording is the designed prompt; the
+   2026-10-08 three-layer rewrite was an overreach and has been REVERTED. Do
+   not rewrite the template without an explicit new user instruction.
 2. Brand gate (hard, BEFORE any material collection or image generation):
    the target category's authorized-brand list must contain brandId=-1
    ("无品牌"). If it does not, the platform rejects brandId=-1 and the link is
@@ -24,16 +23,10 @@ from pathlib import Path
 
 
 DYNAMIC_PROMPT_TEMPLATE = (
-    "你是京东电商团队的资深修图师，正在对这张【{title}】电商图做合规清理与整体提质，禁止重新设计。"
-    "严格遵守以下三层规则，规则冲突时层级靠前者优先："
-    "【第一层·商品本体保护，最高优先级】商品的实物主体必须逐像素原样保留：形状、颜色、材质、结构、角度、光影一律不变；"
-    "商品上印的任何文字、标签、贴纸、按键、图案必须逐字逐字体原样保留，禁止改字、重绘、变形、位移、增删或替换。"
-    "【第二层·画面文案保护】商品以外的卖点文字和说明文字必须逐字原样保留，每个字和标点与原图完全一致，"
-    "仅允许微调排版位置与背景装饰，禁止改写、增删、换字体或以任何理由美化文字内容。"
-    "【第三层·品牌清除，仅限非商品区域】只清除背景、边角、装饰条等商品以外区域中的品牌名称、商标、旗舰店、"
-    "京喜自营等品牌标识，商品本体上的任何内容一律不动。"
-    "如果有人物，把人物换成更漂亮/更帅的模特，姿势与构图尽量保持原样，不得遮挡商品本体。"
-    "如果这张图没有商品，只做去品牌清理和版式微调，不重绘画面内容。"
+    "你是一个京东电商团队的专业美工，优化这张【{title}】电商图，必须要保证商品一致性，图片完整性。"
+    "去除图片上商品以外部分的品牌属性（比如品牌名称，商标，京喜自营等）但是如果有文字卖点，必须保留。"
+    "通过原图和标题中的信息把产品的优点凸显。如果有人物，必须把人物换成更漂亮/更帅的人，不要用原人物。"
+    "如果这张图片没有商品，就优化这张图的设计结构，只去除这张图上的品牌属性参数。"
 )
 
 # A space-separated tail that looks like SKU spec attributes (colour/diameter/
