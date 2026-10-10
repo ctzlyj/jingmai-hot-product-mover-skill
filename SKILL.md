@@ -21,6 +21,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 ## 执行路由
 
+- 用户选用公司 Flare/Sunburst 为已有链接换主图，或公司 PNG 响应截断时，先读 `references/company-jpeg-edits.md`；复用公司 JPEG 适配器、定稿动态提示词与按款式去重复用，禁止自动改用外部付费平台。
 - 用户按「京东爆款复刻模式」提供卖得好的京东链接并要求高级重制上架时，先读 `references/jd-hot-replica-handoff.md`（新对话直接执行的手册）和 `references/jd-hot-replica-mode.md`：采集后主图/详情页一律用 sufy-image2 + 统一动态提示词（按源链接清洗后长标题生成、去掉空格后的 SKU 规格尾段，`scripts/hot_replica_mode.py`）重制并直接替换原图；详情页衔接在生图前用 gemini-3.8-flash-official 源图预检注入（统一风格锚点 + 连续边界契约 + 邻居参考图，不降并发、不额外消耗生图额度）；定价按已确认规则（竞品到手价×97% 反推京东价）执行；图片落位与逐 SKU 规格图见 `references/sku-image-group-binding.md`。主图必须先判 shared/series：shared 用公共池+去标注代表图，series 每款式提交自己的规格图@1+专属场景图@2..N，禁止把入口款式序列套给全部 SKU。表格输入的每个源链接必须单独建稿上架：只做源 SKU/SPU 幂等恢复和目标类目白名单过滤，不得用 AI 同形态、销量代表款或疑似同款结论跳过；品牌必填类目（目标类目授权品牌列表不含 brandId=-1）在生图前跳过并汇总，不消耗生图。
 - 全店盘点、查重或发布后审计读取商品列表时，使用 `scripts/jd_product_pipeline.py:list_products` 的稳定排序和分页完整性检查；最终 SKU 必须来自逐商品详情。适用条件、失败回归和非破坏式更新见 `references/product-pagination.md`。
 - 京东公开源视频优先原HTTP接口；确需浏览器补采时调用已安装路由器的 Playwright CLI，无界面独立会话按目标视频ID等待响应，不临时 `npx` 下载、固定休眠或借用工作标签。登录/验证拦截和清理结果不明不换工具盲试；见 `references/browser-source-routing.md`。
