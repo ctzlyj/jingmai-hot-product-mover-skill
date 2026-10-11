@@ -226,8 +226,8 @@ def product_apply_rejection(product_id: int) -> dict[str, Any] | None:
                 "sortType": "desc",
                 "productIdList": [product_id],
                 "scopeSet": [
-                    "productId", "productName", "auditReason", "pushReason",
-                    "pushStatus", "status", "keeperStatus",
+                    "productId", "productName", "keeperReason", "pushReason",
+                    "draftStatus", "draftComputeStatus", "keeperStatus",
                 ],
             },
         )

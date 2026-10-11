@@ -298,6 +298,27 @@ class ProductMoverTests(unittest.TestCase):
         self.assertEqual(309, rejection["keeperStatus"])
         self.assertEqual(100, rejection["pushStatus"])
 
+    def test_product_apply_rejection_uses_request_enums_for_keeper_reason(self):
+        captured=[]
+        def response(skill,url,params):
+            captured.append((url,params))
+            if 'product-apply/' in url:
+                return {'data':{'applyInfo':{'draftComputeStatus':3,'bossAuditStatus':-1}}}
+            scope=params['scopeSet']
+            row={'productId':10036061623956,'status':300,'keeperStatus':309,'pushStatus':100}
+            if 'keeperReason' in scope:row['auditReason']='image claim rejected'
+            return {'data':[row]}
+        with patch('jd_product_pipeline.jingmai.get',side_effect=response):
+            result=product_apply_rejection(10036061623956)
+        self.assertEqual('image claim rejected',result.get('auditReason'))
+        scope=captured[1][1]['scopeSet']
+        self.assertIn('keeperReason',scope)
+        self.assertIn('draftComputeStatus',scope)
+        self.assertIn('draftStatus',scope)
+        self.assertNotIn('auditReason',scope)
+        self.assertNotIn('status',scope)
+        self.assertNotIn('pushStatus',scope)
+
     def test_product_apply_rejection_ignores_non_rejected_apply(self):
         with patch("jd_product_pipeline.jingmai.get") as get:
             get.return_value = {
