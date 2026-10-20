@@ -13,10 +13,11 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 1. 仅处理用户明确授权使用的商品、图片、详情和视频。
 2. 京东内部业务先读 O2 Skill，京麦发布及库存/视频维护走官方京麦 CLI；外部来源采集不强制经过 O2。涉及网页先读全局 `browser-task-router`，由助手选择现有适配器或工具，不要求用户选择供应商。具体分工见 `references/browser-source-routing.md`。
-3. 阅读 `references/installation-and-configuration.md`，为每个店铺准备独立的非 `default` jdo-cli Profile 和 `config/store.local.json`，再刷新当前店铺、当前类目的实时参考文件。
-4. 每次京麦写操作前调用店铺信息接口，命令 `--profile`、配置中的 `profile`、`venderId` 和 `shopName` 必须全部匹配；不匹配立即停止。
-5. 新类目不得直接套用现代装饰画 Schema。先按 `references/adapting-new-category.md` 做小规模 MVP。
-6. 淘宝来源先按 `references/taobao-source-adapter.md` 做只读采集和单商品 MVP；复用已核实的登录连接，只控制任务专属后台页。新采集优先用白名单字段提取器及 `--capture` 结构化交接，先核对商品ID、真实SKU、价格和详情，再进入草稿流程。禁止导航用户当前活动标签或复制登录资料。
+3. 复用店铺浏览器（京麦店铺浏览器 .lnk）登录态或启动其 CDP 前，必读并遵守 `references/store-browser-profile-pitfalls.md`：中文字面量脚本必须 UTF-8 BOM 或不含中文；启动/关闭前后逐字符回读校验 user-data-dir 与磁盘真实目录一致；未验证「探测的是正确浏览器」前禁止向用户报「登录态失效」或要求扫码；同名相近 profile（英达齐齐店/齐齐店/小达齐齐店）一律从用户给出的 .lnk 精确解析。
+4. 阅读 `references/installation-and-configuration.md`，为每个店铺准备独立的非 `default` jdo-cli Profile 和 `config/store.local.json`，再刷新当前店铺、当前类目的实时参考文件。
+5. 每次京麦写操作前调用店铺信息接口，命令 `--profile`、配置中的 `profile`、`venderId` 和 `shopName` 必须全部匹配；不匹配立即停止。
+6. 新类目不得直接套用现代装饰画 Schema。先按 `references/adapting-new-category.md` 做小规模 MVP。
+7. 淘宝来源先按 `references/taobao-source-adapter.md` 做只读采集和单商品 MVP；复用已核实的登录连接，只控制任务专属后台页。新采集优先用白名单字段提取器及 `--capture` 结构化交接，先核对商品ID、真实SKU、价格和详情，再进入草稿流程。禁止导航用户当前活动标签或复制登录资料。
    非装饰画可传入独立店铺、规则和实时参考文件；淘宝草稿必须附逐商品类目审核，不再默认当作装饰画。独立详情页按来源链接和商品ID绑定，整批复用一个已授权采集会话。
 
 ## 执行路由
