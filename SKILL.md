@@ -23,6 +23,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 ## 执行路由
 
 - 用户选用公司 Flare/Sunburst 为已有链接换主图，或公司 PNG 响应截断时，先读 `references/company-jpeg-edits.md`；复用公司 JPEG 适配器、定稿动态提示词与按款式去重复用；已授权的拒绝/额度回退按用户选择走外部，未授权时不擅自收费，不把公司-only适配器限制扩大为任务禁令。
+- 用户给出某家店铺的京麦浏览器快捷方式并要求“整店主图全换掉”（多套主图：公共组+各颜色组）时，按 `references/batch-main-image-refresh.md` 执行：同 URL 只生成一次全组复用、Flare/Sunburst 双模型并发、位号 10 上限、PATCH 重试先对账不重发、终验不依赖组 uuid、模型拒图保留原图并登记。
 - 用户按「京东爆款复刻模式」提供卖得好的京东链接并要求高级重制上架时，先读 `references/jd-hot-replica-handoff.md`（新对话直接执行的手册）和 `references/jd-hot-replica-mode.md`：采集后主图/详情页一律用 sufy-image2 + 统一动态提示词（按源链接清洗后长标题生成、去掉空格后的 SKU 规格尾段，`scripts/hot_replica_mode.py`）重制并直接替换原图；详情页衔接在生图前用 gemini-3.8-flash-official 源图预检注入（统一风格锚点 + 连续边界契约 + 邻居参考图，不降并发、不额外消耗生图额度）；定价按已确认规则（竞品到手价×97% 反推京东价）执行；图片落位与逐 SKU 规格图见 `references/sku-image-group-binding.md`。主图必须先判 shared/series：shared 用公共池+去标注代表图，series 每款式提交自己的规格图@1+专属场景图@2..N，禁止把入口款式序列套给全部 SKU。表格输入的每个源链接必须单独建稿上架：只做源 SKU/SPU 幂等恢复和目标类目白名单过滤，不得用 AI 同形态、销量代表款或疑似同款结论跳过；品牌必填类目（目标类目授权品牌列表不含 brandId=-1）在生图前跳过并汇总，不消耗生图。
 - 全店盘点、查重或发布后审计读取商品列表时，使用 `scripts/jd_product_pipeline.py:list_products` 的稳定排序和分页完整性检查；最终 SKU 必须来自逐商品详情。适用条件、失败回归和非破坏式更新见 `references/product-pagination.md`。
 - 用户要求删除线上商品的 3:4 主图（rectangleImages/长图）时，先读 `references/rectangle-image-deletion.md`：走商品编辑页 UI 保存链路清空 rectangleImageMap，不用整版编辑 API；历史属性缺陷商品先补齐商品级和 SKU 级必填属性再保存，保存后用 product-apply 独立回查。
@@ -113,6 +114,7 @@ python scripts/merchant_template_import.py `
 - 已有 SKU 绑定其他视频时停止，绝不自动覆盖。
 - 已有商品整版编辑不得携带库存；库存修改只能走库存专用接口。
 - 禁止使用 `default` Profile；所有 jdo-cli 调用必须绑定店铺专属 Profile，写操作前重新回查店铺身份。
+- 批量脚本调用京麦 CLI 必须抑制子进程控制台窗口（`import win_no_window`，见 `scripts/win_no_window.py`）：不加 `CREATE_NO_WINDOW` 会逐商品弹黑窗，干扰用户工作。
 - 线上商品图片补丁先 dry-run 再 apply；PATCH 提交后必须独立回读确认 `ALREADY_CURRENT`，写结果不明只 reconcile 不重放。主图 `WareSkuImg` PATCH 按槽位覆盖合并：提交比线上更少的 value 不会删除尾部图；删除主图的可靠做法是用同组干净图顶替该槽位并保持数量，真实删除能力未验证前不得假设生效。
 - `publish_local_draft.py` 必须先校验 `PUBLISH_TO_JD`，再创建锁、上传素材或写状态；缺少确认时不得产生任何发布副作用。
 - 商品详情返回“未查询到商品信息”时必须查询申请单详情；`draftComputeStatus=3` 立即写入 `PRODUCT_APPLY_REJECTED` 并停止，不能继续轮询或重新创建。
