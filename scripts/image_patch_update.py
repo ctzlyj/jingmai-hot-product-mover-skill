@@ -23,7 +23,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import jdo_listing_mvp as cli  # noqa: E402
+try:
+    import jdo_listing_mvp as cli  # noqa: E402
+except ModuleNotFoundError:  # synced copy inside the standalone refresh skill
+    import _common as _common_for_cli
+
+    sys.path.insert(0, str(_common_for_cli.mover_scripts_dir()))
+    import jdo_listing_mvp as cli  # noqa: E402
 
 
 def build_image_patch_payload(detail: dict[str, Any], url_map: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
