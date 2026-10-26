@@ -1,5 +1,9 @@
 """Image-only PATCH updates for products that cannot pass a full edit.
 
+A synced copy lives in jd-jingmai-batch-main-image-refresh/scripts/; keep the
+two identical so both the 搬运 flow and the standalone refresh skill behave
+the same way.
+
 Some legacy products carry structured sale attributes whose aliases no longer
 pass platform revalidation (1010300506). Any full product-applies edit
 rebuilds those attributes and is rejected. The PATCH endpoint
