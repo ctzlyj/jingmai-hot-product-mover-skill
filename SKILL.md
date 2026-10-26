@@ -23,7 +23,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 ## 执行路由
 
 - 用户选用公司 Flare/Sunburst 为已有链接换主图，或公司 PNG 响应截断时，先读 `references/company-jpeg-edits.md`；复用公司 JPEG 适配器、定稿动态提示词与按款式去重复用；已授权的拒绝/额度回退按用户选择走外部，未授权时不擅自收费，不把公司-only适配器限制扩大为任务禁令。
-- 整店主图全换（多套主图：公共组+各颜色组）优先用独立 Skill jd-jingmai-batch-main-image-refresh：job.json 驱动的 8 步流水线（快照→plan→下载→双模型生成→上传→PATCH→终验→对比图/Excel），同 URL 只生成一次全组复用、PATCH 重试先对账不重发。本 Skill 内 references/batch-main-image-refresh.md 保留同一改图能力，用于「改完图再上架」「上架后改图」这类必须和搬运流程串起来的场景。
+- 店铺图片批量优化（主图 / 详情页）优先用独立 Skill jd-jingmai-batch-image-refresh：job.json 驱动的流水线（快照→plan→下载→双模型生成→上传→主图槽位 PATCH / 详情页 HTML 写回→终验→对比图/Excel），多套主图同 URL 只生成一次全组复用、PATCH 重试先对账不重发。本 Skill 内 references/batch-main-image-refresh.md 保留同一改图能力，用于「改完图再上架」「上架后改图」这类必须和搬运流程串起来的场景。
 - 用户按「京东爆款复刻模式」提供卖得好的京东链接并要求高级重制上架时，先读 `references/jd-hot-replica-handoff.md`（新对话直接执行的手册）和 `references/jd-hot-replica-mode.md`：采集后主图/详情页一律用 sufy-image2 + 统一动态提示词（按源链接清洗后长标题生成、去掉空格后的 SKU 规格尾段，`scripts/hot_replica_mode.py`）重制并直接替换原图；详情页衔接在生图前用 gemini-3.8-flash-official 源图预检注入（统一风格锚点 + 连续边界契约 + 邻居参考图，不降并发、不额外消耗生图额度）；定价按已确认规则（竞品到手价×97% 反推京东价）执行；图片落位与逐 SKU 规格图见 `references/sku-image-group-binding.md`。主图必须先判 shared/series：shared 用公共池+去标注代表图，series 每款式提交自己的规格图@1+专属场景图@2..N，禁止把入口款式序列套给全部 SKU。表格输入的每个源链接必须单独建稿上架：只做源 SKU/SPU 幂等恢复和目标类目白名单过滤，不得用 AI 同形态、销量代表款或疑似同款结论跳过；品牌必填类目（目标类目授权品牌列表不含 brandId=-1）在生图前跳过并汇总，不消耗生图。
 - 全店盘点、查重或发布后审计读取商品列表时，使用 `scripts/jd_product_pipeline.py:list_products` 的稳定排序和分页完整性检查；最终 SKU 必须来自逐商品详情。适用条件、失败回归和非破坏式更新见 `references/product-pagination.md`。
 - 用户要求删除线上商品的 3:4 主图（rectangleImages/长图）时，先读 `references/rectangle-image-deletion.md`：走商品编辑页 UI 保存链路清空 rectangleImageMap，不用整版编辑 API；历史属性缺陷商品先补齐商品级和 SKU 级必填属性再保存，保存后用 product-apply 独立回查。
