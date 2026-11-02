@@ -606,7 +606,15 @@ def automate_main_video(
     state = save_state(state_path, "VIDEO_TRANSCODED", videoAutomation=automation)
 
     category_ids = [int(value) for value in source.get("categoryIds") or []]
-    second_category_id = category_ids[-2] if len(category_ids) >= 2 else category_ids[-1]
+    if len(category_ids) >= 2:
+        second_category_id = category_ids[-2]
+    elif category_ids:
+        second_category_id = category_ids[-1]
+    else:
+        # Taobao captures do not carry JD categoryIds; use the reviewed target category.
+        second_category_id = int((source.get("categoryReview") or {}).get("targetCategoryId") or 0)
+    if not second_category_id:
+        raise PipelineError("无法确定视频标签查询类目")
     tags = jingmai.get(
         "jdo-product-material",
         "/rest/sp-product/v0/sku-material-tags",
