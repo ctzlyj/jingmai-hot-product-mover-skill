@@ -28,7 +28,7 @@ try:
 except ModuleNotFoundError:  # synced copy inside the standalone refresh skill
     import _common as _common_for_cli
 
-    sys.path.insert(0, str(_common_for_cli.mover_scripts_dir()))
+    sys.path.insert(0, str(_common_for_cli.jdo_scripts_dir()))
     import jdo_listing_mvp as cli  # noqa: E402
 
 
