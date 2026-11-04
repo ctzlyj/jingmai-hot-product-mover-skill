@@ -11,8 +11,8 @@
     "model": "折叠款",
     "sevenDayReturnCode": "1",
     "sevenDayReturnLabel": "支持7天无理由退货",
-    "freightTemplateId": 1119941784,
-    "freightTemplateLabel": "千百日用品质店店运费模板",
+    "freightTemplateId": 0,
+    "freightTemplateLabel": "店铺运费模板（由 store.local.json 覆盖）",
     "mainImageMode": "single_set",
     "stock": 10000
   },

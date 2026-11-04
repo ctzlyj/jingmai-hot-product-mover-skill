@@ -10,7 +10,7 @@ rebuilds those attributes and is rejected. The PATCH endpoint
 /rest/sp-product/v0/product-applies/{applyId} (opType 3, shared-image flow)
 only updates WareSkuImg components, so sale attributes are never revalidated.
 
-Verified 2026-10-10 on 简里好物店: 7/7 structured-attribute products updated
+Verified 2026-10-10 on a live POP store: 7/7 structured-attribute products updated
 and apply-detail rechecks matched every swapped URL.
 """
 

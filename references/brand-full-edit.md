@@ -8,7 +8,7 @@
 
 ```powershell
 python <本Skill目录>/scripts/set_product_brand.py `
-  --profile jianxitang --shop-name 见喜堂装饰画店 `
+  --profile <店铺Profile> --shop-name <店铺名> `
   --brand-id 1886203 --brand-name 鸿运鸟 `
   --run-dir .\brand-run-1886203
 ```

@@ -1,6 +1,6 @@
 ---
 name: jd-jingmai-hot-product-mover
-description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复和新增来源/类目适配；不用于绕过登录、平台权限、版权授权或营销活动报名。
+description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复、新增来源/类目适配，以及本店在售链接的同款矩阵换主图上架；不用于绕过登录、平台权限、版权授权或营销活动报名。
 ---
 
 # 爆品自动搬运上架京麦
@@ -9,11 +9,25 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 每次真实任务同时用于改进本个人版：记录各阶段耗时、重复调用、失败与恢复证据，优先减少重复取数、复用同店铺素材和采用已验证的批量流程。只沉淀已复现、根因确认且修复验证通过的改进；优化不能代替本批业务完成，也不能以省略商家原码、错店保护、精确定价、幂等或独立回查换速度。工具选择和授权内恢复由助手自主完成。
 
+## 首次使用（同事从 SkillHub 安装后先做）
+
+```powershell
+python -X utf8 scripts\bootstrap.py --json
+```
+
+脚本自动建 Skill 内 `.venv` 并装依赖（官方源慢时自动换清华/腾讯镜像）、找到或复制 jdo-cli、定位 Python 3.12 并提取大请求体运行时、列出已登录 Profile、检查生图 Key/sufy-image2/HiOffice。只按返回的 `nextActions` 处理：`owner=agent` 由助手自己解决；`owner=user` 只有两类——告诉助手**店铺身份**（店铺名或店铺浏览器 .lnk），以及在该店铺浏览器里完成**京麦授权登录**（助手用 `jingmai-cli-linker` 或 `jdo-cli login --profile pop-<拼音>` 生成链接）。授权后运行：
+
+```powershell
+python -X utf8 scripts\bootstrap.py --json --profile pop-<拼音> --category-id <叶子类目> --category-name <类目名> [--brand-category-id <三级类目>]
+```
+
+它回查 venderinfo 后生成 `config/store.local.json`（已有不覆盖）并刷新类目 reference；叶子类目报「不是三级类目」时补 `--brand-category-id`。运费模板 ID 从店铺现有商品 `logisticsInfo.transportId` 读取后填写。Key、Token、店铺配置只留在使用者本机，不进仓库或 SkillHub 包。
+
 ## 使用前
 
 1. 仅处理用户明确授权使用的商品、图片、详情和视频。
 2. 京东内部业务先读 O2 Skill，京麦发布及库存/视频维护走官方京麦 CLI；外部来源采集不强制经过 O2。涉及网页先读全局 `browser-task-router`，由助手选择现有适配器或工具，不要求用户选择供应商。具体分工见 `references/browser-source-routing.md`。
-3. 复用店铺浏览器（京麦店铺浏览器 .lnk）登录态或启动其 CDP 前，必读并遵守 `references/store-browser-profile-pitfalls.md`：中文字面量脚本必须 UTF-8 BOM 或不含中文；启动/关闭前后逐字符回读校验 user-data-dir 与磁盘真实目录一致；未验证「探测的是正确浏览器」前禁止向用户报「登录态失效」或要求扫码；同名相近 profile（英达齐齐店/齐齐店/小达齐齐店）一律从用户给出的 .lnk 精确解析。
+3. 复用店铺浏览器（京麦店铺浏览器 .lnk）登录态或启动其 CDP 前，必读并遵守 `references/store-browser-profile-pitfalls.md`：中文字面量脚本必须 UTF-8 BOM 或不含中文；启动/关闭前后逐字符回读校验 user-data-dir 与磁盘真实目录一致；未验证「探测的是正确浏览器」前禁止向用户报「登录态失效」或要求扫码；同名相近 profile（如 A店/A旗舰店/小A店）一律从用户给出的 .lnk 精确解析。
 4. 阅读 `references/installation-and-configuration.md`，为每个店铺准备独立的非 `default` jdo-cli Profile 和 `config/store.local.json`，再刷新当前店铺、当前类目的实时参考文件。
 5. 每次京麦写操作前调用店铺信息接口，命令 `--profile`、配置中的 `profile`、`venderId` 和 `shopName` 必须全部匹配；不匹配立即停止。
 6. 新类目不得直接套用现代装饰画 Schema。先按 `references/adapting-new-category.md` 做小规模 MVP。
@@ -22,12 +36,13 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 ## 执行路由
 
+- 用户给本店一条在售链接要求「同款矩阵 / 多链接换主图上架」时，读 `references/matrix-main-image-listing.md`，用 `scripts/matrix_listing.py`：apply 快照→imgzone 原图→Flare/Sunburst 交替重设计（定稿动态提示词+风格 suffix+通用硬性要求）→上传→沿用原链接全部商品数据建新品（新 mappingId、`MX<风格>-<原ID>` 货号、白底图复制）→校验→确认后发布→逐 SKU 回查→复用原视频。生成后必须抽检文字。
 - 用户选用公司 Flare/Sunburst 为已有链接换主图，或公司 PNG 响应截断时，先读 `references/company-jpeg-edits.md`；复用公司 JPEG 适配器、定稿动态提示词与按款式去重复用；已授权的拒绝/额度回退按用户选择走外部，未授权时不擅自收费，不把公司-only适配器限制扩大为任务禁令。
 - 店铺图片批量优化（主图 / 详情页）优先用独立 Skill jd-jingmai-batch-image-refresh：job.json 驱动的流水线（快照→plan→下载→双模型生成→上传→主图槽位 PATCH / 详情页 HTML 写回→终验→对比图/Excel），多套主图同 URL 只生成一次全组复用、PATCH 重试先对账不重发。本 Skill 内 references/batch-main-image-refresh.md 保留同一改图能力，用于「改完图再上架」「上架后改图」这类必须和搬运流程串起来的场景。
 - 用户按「京东爆款复刻模式」提供卖得好的京东链接并要求高级重制上架时，先读 `references/jd-hot-replica-handoff.md`（新对话直接执行的手册）和 `references/jd-hot-replica-mode.md`：采集后主图/详情页一律用 sufy-image2 + 统一动态提示词（按源链接清洗后长标题生成、去掉空格后的 SKU 规格尾段，`scripts/hot_replica_mode.py`）重制并直接替换原图；详情页衔接在生图前用 gemini-3.8-flash-official 源图预检注入（统一风格锚点 + 连续边界契约 + 邻居参考图，不降并发、不额外消耗生图额度）；定价按已确认规则（竞品到手价×97% 反推京东价）执行；图片落位与逐 SKU 规格图见 `references/sku-image-group-binding.md`。主图必须先判 shared/series：shared 用公共池+去标注代表图，series 每款式提交自己的规格图@1+专属场景图@2..N，禁止把入口款式序列套给全部 SKU。表格输入的每个源链接必须单独建稿上架：只做源 SKU/SPU 幂等恢复和目标类目白名单过滤，不得用 AI 同形态、销量代表款或疑似同款结论跳过；品牌必填类目（目标类目授权品牌列表不含 brandId=-1）在生图前跳过并汇总，不消耗生图。
 - 全店盘点、查重或发布后审计读取商品列表时，使用 `scripts/jd_product_pipeline.py:list_products` 的稳定排序和分页完整性检查；最终 SKU 必须来自逐商品详情。适用条件、失败回归和非破坏式更新见 `references/product-pagination.md`。
 - 用户要求删除线上商品的 3:4 主图（rectangleImages/长图）时，先读 `references/rectangle-image-deletion.md`：走商品编辑页 UI 保存链路清空 rectangleImageMap，不用整版编辑 API；历史属性缺陷商品先补齐商品级和 SKU 级必填属性再保存，保存后用 product-apply 独立回查。
-- 用户要求为已有多套主图商品批量换主图时：逐商品分析公共组+颜色组结构，同 URL 公共图去重后只生成一次并全组复用（省额度约 60%）；提示词用用户通用定稿（不自拟卖点），双模型 Flare/Sunburst 各 4 并发；PATCH url_map 全组提交，逐条回查全部组全部位新图、组数不变、价格零变更；有 3:4/ggt/超 9 位等脏数据时先读对应 references 再处理。2026-10-20 英达齐齐店 23 条全量验证通过。
+- 用户要求为已有多套主图商品批量换主图时：逐商品分析公共组+颜色组结构，同 URL 公共图去重后只生成一次并全组复用（省额度约 60%）；提示词用用户通用定稿（不自拟卖点），双模型 Flare/Sunburst 各 4 并发；PATCH url_map 全组提交，逐条回查全部组全部位新图、组数不变、价格零变更；有 3:4/ggt/超 9 位等脏数据时先读对应 references 再处理。2026-10-20 某店 23 条全量验证通过。
 - 京东公开源视频优先原HTTP接口；确需浏览器补采时调用已安装路由器的 Playwright CLI，无界面独立会话按目标视频ID等待响应，不临时 `npx` 下载、固定休眠或借用工作标签。登录/验证拦截和清理结果不明不换工具盲试；见 `references/browser-source-routing.md`。
 - 京东源需要逐SKU到手价（优惠后）时，在已登录任务页上下文内调用 `pc_detailpage_wareBusiness` 接口批量读取 `bestPromotion.purchasePrice`，不逐页切换商品；见 `references/browser-source-routing.md`。
 - 京东源商品信息表的SKU行顺序必须按 `wareBusiness` 返回的 `colorSizeVO.colorSizeList`（维度1 `buttons` 的 `no` 字段，即前台展示顺序/主推款顺序）排序，不按采集器返回顺序；见 `references/browser-source-routing.md`。

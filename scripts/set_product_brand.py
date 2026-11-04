@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Batch-set the brand on existing POP products via verified full-edit schema.
 
-Proven live 2026-10-03 on jianxitang (116/116) + putuo-huacang (41/42; the
+Proven live 2026-10-03 on two POP stores (116/116 + 41/42; the
 single remaining item was blocked by platform activity protection).
 
 Hard-won invariants (do not "simplify" these away):
@@ -27,7 +27,7 @@ Hard-won invariants (do not "simplify" these away):
    SKU titles. This is expected platform behavior, not a defect.
 
 Usage:
-  python set_product_brand.py --profile jianxitang --shop-name 见喜堂装饰画店 \
+  python set_product_brand.py --profile <store-profile> --shop-name <店铺名> \
       --brand-id 1886203 --brand-name 鸿运鸟 [--run-dir ./brand-run]
   Modes: default = full run; --dry-run = validate only (no submit);
          --audit-only = verify current brand/images without editing;

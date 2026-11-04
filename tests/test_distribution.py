@@ -40,6 +40,35 @@ class PortablePathTests(unittest.TestCase):
                     offenders.append(f"{path.relative_to(ROOT)}: {marker}")
         self.assertEqual([], offenders)
 
+    def test_tracked_files_do_not_name_local_stores(self):
+        """Shop names/venderIds of the stores linked on this machine must not ship."""
+        import json
+
+        profiles = Path.home() / ".jdo-cli" / "profiles"
+        terms = set()
+        for path in profiles.glob("*.json") if profiles.is_dir() else []:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            for key in ("shop_name", "vender_id"):
+                value = str(data.get(key) or "").strip()
+                if len(value) >= 4:
+                    terms.add(value)
+        if not terms:
+            self.skipTest("no local jdo-cli profiles to compare against")
+        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True, text=True, encoding="utf-8")
+        if listed.returncode:
+            self.skipTest("not a git checkout")
+        offenders = []
+        for rel in listed.stdout.splitlines():
+            path = ROOT / rel
+            if path.suffix.lower() not in {".py", ".md", ".json", ".txt", ".yaml", ".yml", ".ps1", ".js"}:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            offenders += [f"{rel}: {term[:2]}…" for term in terms if term in text]
+        self.assertEqual([], offenders)
+
     def test_sufy_scripts_dir_honours_env_override(self):
         sys.path.insert(0, str(ROOT / "scripts"))
         import skill_paths

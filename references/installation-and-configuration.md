@@ -1,5 +1,7 @@
 # 安装与配置
 
+> 首次使用优先运行 `python -X utf8 scripts/bootstrap.py --json`，它会自动完成下面大部分步骤（虚拟环境与依赖、jdo-cli、Python 3.12、运行时、店铺配置、类目 reference），只把店铺身份和登录留给使用者。下文是手工步骤与原理说明。
+
 ## 环境要求
 
 - Windows 10/11。

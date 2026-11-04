@@ -1,6 +1,6 @@
 # 京东爆款复刻模式交接手册（2026-09-28 首链路全通版）
 
-本手册面向新对话直接执行京东爆款复刻上架，全部规则来自泡澡桶批次（源 10233331213967 → 千百日用品质店店 10036194410506）的真实全链路验证。开工前先读 `SKILL.md` 和 `references/jd-hot-replica-mode.md`；图片落位细节在 `references/sku-image-group-binding.md`。
+本手册面向新对话直接执行京东爆款复刻上架，全部规则来自泡澡桶批次（源 10233331213967 → 目标店 10036194410506）的真实全链路验证。开工前先读 `SKILL.md` 和 `references/jd-hot-replica-mode.md`；图片落位细节在 `references/sku-image-group-binding.md`。
 
 ## 固定环境（本机）
 
