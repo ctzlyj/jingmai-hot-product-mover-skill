@@ -16,7 +16,9 @@ categories exit with SKIPPED_BRAND_REQUIRED and no plan (no generation quota).
 import argparse, base64, json, pathlib, re, sys, urllib.request
 sys.stdout.reconfigure(encoding="utf-8")
 
-SUFY = pathlib.Path(r"C:\Users\caotong.888\.joycode\skills\sufy-image2\scripts")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from skill_paths import sufy_scripts_dir  # noqa: E402
+SUFY = sufy_scripts_dir()
 sys.path.insert(0, str(SUFY))
 SKILL = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILL / "scripts"))

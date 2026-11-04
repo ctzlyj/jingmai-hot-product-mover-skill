@@ -5,7 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 
-SUFY_CLI = r"C:\Users\caotong.888\.joycode\skills\sufy-image2\scripts\sufy_image2.py"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from skill_paths import sufy_scripts_dir  # noqa: E402
+SUFY_CLI = str(sufy_scripts_dir() / "sufy_image2.py")
 PY = sys.executable
 
 def parse_json(text):

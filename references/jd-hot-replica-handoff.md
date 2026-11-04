@@ -4,9 +4,9 @@
 
 ## 固定环境（本机）
 
-- Skill 仓库：`C:\Users\caotong.888\.joycode\skills\jd-jingmai-hot-product-mover`（GitHub：`ctzlyj/jingmai-hot-product-mover-skill`）
+- Skill 目录：本 Skill 的安装目录（SkillHub 安装或 Git 仓库副本均可）
 - Python：仓库内 `.venv\Scripts\python.exe`；CLI 入口 `scripts\jdo_listing_mvp.py`
-- 任务局部脚本目录：`D:\caotong.888\Documents\ChatGPT\搬运上架skill\scripts\<品类-日期>\`（草稿/探针/价格表都放这里，不进 Skill）
+- 任务局部脚本目录：工作区下 `scripts\<品类-日期>\`（草稿/探针/价格表都放这里，不进 Skill）
 - 生图 Key：`%LOCALAPPDATA%\JoyCode\credentials\sufy-image2.dpapi`（DPAPI，不进任何源码/日志）
 - 店铺身份：`config\store.local.json` 白名单 + 店铺专属 store-config（如 `qianbai-bath-tub.store.json`）；每次写操作前 CLI 自动三要素核对（店铺名+venderId+Profile 一致），禁止 default Profile。换新店铺执行时，先按 `references/installation-and-configuration.md` 为该店建立独立 Profile、store-config 和目标类目 reference，不得复用其他店铺的配置文件。
 
