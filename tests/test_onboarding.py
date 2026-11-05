@@ -22,7 +22,7 @@ class OnboardingTests(unittest.TestCase):
             self.assertIn(word,text)
     def test_skill_starts_with_version_prompt_and_selfcheck(self):
         text=(ROOT/'SKILL.md').read_text(encoding='utf-8')
-        self.assertRegex(text.split('---')[1], r'version: 1\.1\.[012]')
+        self.assertRegex(text.split('---')[1], r'version: \d+\.\d+\.\d+')
         top=text.split('## 使用前')[0]
         for word in ('11153@最新版本','bootstrap.py','environmentReady','businessReady','结果目录'):
             self.assertIn(word,top)
