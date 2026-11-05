@@ -296,6 +296,7 @@ def verify_package(root,attempts=18,interval=10):
  from image_patch_update import group_urls
  groups=group_urls(apply)
  if (detail.get('productInfo') or {}).get('productName')!=listing['product']['title']:problems.append('title mismatch')
+ if int(((detail.get('productInfo') or {}).get('productStatus') or {}).get('productStatusNew') or 0)!=1:problems.append('product not on sale')
  expected_main=[i['upload']['imgUrl'] for i in listing['images'] if i['role']=='spu_main']
  if groups.get('0000000000')!=expected_main:problems.append('SPU main image order mismatch')
  stocks={str(s.get('skuId')):s for s in cli.query_sku_stocks([int(s['skuId']) for s in detail['skuList']])}
@@ -305,6 +306,8 @@ def verify_package(root,attempts=18,interval=10):
   value=(remote.get('priceInfo') or {}).get('jdPrice')
   if value is None or float(value)!=float(sku['jdPrice']):problems.append('price '+key)
   if int(remote.get('skuEnableStatus') or 0)!=1:problems.append('disabled SKU '+key)
+  status=remote.get('skuStats') if 'skuStats' in remote else remote.get('skuStatus')
+  if int((status or {}).get('onOffShelfStatus') or 0)!=1:problems.append('SKU not on shelf '+key)
   stock=stocks.get(str(remote['skuId'])) or {}
   actual_stock=stock.get('stockNum')
   if actual_stock is None or int(actual_stock)!=int(sku['stock']):problems.append('stock '+key)

@@ -81,8 +81,8 @@ class PhotoReadbackTests(unittest.TestCase):
   m=self.m;m['productId']=100;listing=pl.build_listing(m,self.root,reference());sku=listing['skus'][0]
   for item in listing['images']:item['upload']={'imgUrl':{'spu_main':'jfs/spu.jpg','sku_main':'jfs/sku.jpg','detail':'jfs/detail.jpg'}[item['role']]}
   m['variants'][0]['vendorSku']=sku['vendorSku'];atomic_json(self.root/'manifest.json',m);atomic_json(self.root/'listing.json',listing)
-  remote={'skuId':101,'outerId':sku['vendorSku'],'priceInfo':{'jdPrice':10.50},'stockNum':12,'skuEnableStatus':1,'saleAttrs':[{'attrValueAlias':'白色','attrValues':'color-one'}]}
-  detail={'productInfo':{'productName':'测试收纳架','categoryDetail':{'lastCategoryId':1}},'skuList':[remote]}
+  remote={'skuId':101,'outerId':sku['vendorSku'],'priceInfo':{'jdPrice':10.50},'stockNum':12,'skuEnableStatus':1,'skuStats':{'onOffShelfStatus':1},'saleAttrs':[{'attrValueAlias':'白色','attrValues':'color-one'}]}
+  detail={'productInfo':{'productName':'测试收纳架','productStatus':{'productStatusNew':1},'categoryDetail':{'lastCategoryId':1}},'skuList':[remote]}
   apply={'applyInfo':{'draftComputeStatus':2},'skuList':[remote], 'productInfo':{'productDetailDesc':{'desc':"<img src='https://img10.360buyimg.com/imgzone/jfs/detail.jpg'>"}},'material':{'mainImages':[{'uuid':'0000000000','imageInfoList':[{'imgUrl':'jfs/spu.jpg','orderSort':1}]},{'uuid':'color-one','imageInfoList':[{'imgUrl':'jfs/sku.jpg','orderSort':1}]}]}}
   return detail,apply
  def test_verify_exports_online_product_and_sku_ids(self):
@@ -90,6 +90,11 @@ class PhotoReadbackTests(unittest.TestCase):
   def get(skill,url,params):return {'data':apply if '/product-apply/' in url else detail}
   with patch.object(pl,'verify_store'),patch.object(pl.cli,'get',side_effect=get),patch.object(pl.cli,'query_sku_stocks',return_value=[{'skuId':101,'stockNum':12}]):r=pl.verify_package(self.root,attempts=1,interval=0)
   self.assertEqual('VERIFIED',r['status']);m=json.loads((self.root/'manifest.json').read_text(encoding='utf-8'));self.assertEqual([101],m['skuIds']);self.assertEqual(101,m['variants'][0]['skuId'])
+ def test_unshelved_product_cannot_be_marked_verified(self):
+  detail,apply=self.prepare_readback();detail['productInfo']['productStatus']['productStatusNew']=2;detail['skuList'][0]['skuStats']['onOffShelfStatus']=0
+  def get(skill,url,params):return {'data':apply if '/product-apply/' in url else detail}
+  with patch.object(pl,'verify_store'),patch.object(pl.cli,'get',side_effect=get),patch.object(pl.cli,'query_sku_stocks',return_value=[{'skuId':101,'stockNum':12}]):r=pl.verify_package(self.root,attempts=1,interval=0)
+  self.assertEqual('VERIFICATION_FAILED',r['status'])
  def test_missing_dedicated_inventory_cannot_fall_back_to_product_cache(self):
   detail,apply=self.prepare_readback()
   def get(skill,url,params):return {'data':apply if '/product-apply/' in url else detail}
