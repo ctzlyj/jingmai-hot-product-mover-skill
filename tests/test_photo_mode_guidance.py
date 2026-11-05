@@ -17,7 +17,7 @@ class PhotoModeGuidanceTests(unittest.TestCase):
         text = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
         self.assertIn('实拍图上新', text)
         self.assertIn('三款独立并发', text)
-        self.assertIn('实拍模式尚未实现', text)
+        self.assertIn('尚待真实商品验收', text)
         self.assertIn('不改变旧矩阵模式', text)
 
 if __name__ == '__main__':

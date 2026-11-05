@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "listing-package/v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "mode",
+    "status",
+    "store",
+    "title",
+    "productId",
+    "skuIds",
+    "mainImages",
+    "detailImages",
+    "variants"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "listing-package/v1"
+    },
+    "mode": {
+      "const": "photo-new-listing"
+    },
+    "status": {
+      "type": "string"
+    },
+    "store": {
+      "type": "object",
+      "required": [
+        "profile",
+        "venderId",
+        "shopName"
+      ],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "pattern": "^(?!default$)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+        },
+        "venderId": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "shopName": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "productId": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "skuIds": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "uniqueItems": true
+    },
+    "sellingPoints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "category": {
+      "type": "object"
+    },
+    "mainImages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    },
+    "detailImages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "skuImage"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "skuId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "skuImage": {
+            "$ref": "#/$defs/image"
+          },
+          "spec": {
+            "type": "string"
+          },
+          "jdPrice": {
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "stock": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "video": {
+      "type": "object"
+    },
+    "timings": {
+      "type": "object"
+    },
+    "facts": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "required": [
+        "localPath"
+      ],
+      "properties": {
+        "localPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Package-relative path; resolve with containment checks before reading"
+        },
+        "onlineUrl": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "previewOnly": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "VERIFIED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "category",
+          "verification"
+        ],
+        "properties": {
+          "productId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "skuIds": {
+            "minItems": 1
+          },
+          "mainImages": {
+            "minItems": 1
+          },
+          "detailImages": {
+            "minItems": 1
+          },
+          "variants": {
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "skuId": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "skuId",
+                "vendorSku",
+                "jdPrice",
+                "stock"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
