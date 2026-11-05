@@ -18,7 +18,8 @@ import argparse
 import importlib.util
 import json
 import os
-import socket
+import shutil
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -34,7 +35,6 @@ REQUIRED_MODULES = ("requests", "openpyxl", "PIL", "cv2", "numpy")
 SKILL_ROOTS = (".codex/skills", ".agents/skills", ".joycode/skills", ".claude/skills")
 SIBLING_JDO_SKILLS = ("jd-jingmai-batch-image-refresh",)
 PLACEHOLDER_SHOPS = {"", "YOUR_SHOP_NAME", "示例店铺"}
-HIOFFICE_PORTS = tuple(8988 + index * 2 for index in range(10))
 # "" = whatever pip is configured with. pypi.org downloads opencv at ~50 KB/s on
 # the office network (2026-11-04: >15 min stalled); domestic mirrors ~1.5 MB/s.
 PIP_INDEXES = ("", "https://pypi.tuna.tsinghua.edu.cn/simple", "https://mirrors.cloud.tencent.com/pypi/simple")
@@ -108,10 +108,12 @@ def ensure_venv(check_only: bool) -> dict[str, Any]:
 # ------------------------------------------------------------------ jdo-cli
 def sibling_jdo_cli(home: Path | None = None, skill_root: Path = SKILL) -> Path | None:
     home = Path(home or Path.home())
-    roots = [skill_root.parent] + [home / base for base in SKILL_ROOTS]
-    for root in roots:
-        for name in SIBLING_JDO_SKILLS:
-            candidate = root / name / "vendor" / "jdo-cli" / "bin" / "jdo-cli.exe"
+    from skill_paths import installed_skill_dir
+
+    for name in SIBLING_JDO_SKILLS:
+        root = installed_skill_dir(name, skill_root=skill_root, home=home)
+        if root:
+            candidate = root / "vendor/jdo-cli/bin/jdo-cli.exe"
             if candidate.is_file():
                 return candidate
     return None
@@ -288,32 +290,140 @@ def user_env(name: str) -> str:
         return ""
 
 
+def user_env_present(name: str) -> bool:
+    """Query registry value byte count only; never fetch/decrypt a model Key."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        import winreg
+        from ctypes import wintypes
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            size = wintypes.DWORD()
+            query = ctypes.windll.advapi32.RegQueryValueExW
+            query.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, ctypes.c_void_p,
+                              ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+            rc = query(wintypes.HANDLE(int(key)), name, None, None, None, ctypes.byref(size))
+            return rc == 0 and size.value > 2
+    except (OSError, AttributeError):
+        return False
+
+
 def describe_key() -> dict[str, Any]:
     for name in ("JD_LLM_API_KEY", "GPT_IMAGE2_API_KEY"):
-        if os.environ.get(name, "").strip():
+        if bool(os.environ.get(name)):
             return {"present": True, "source": f"process env {name}"}
-        if user_env(name):
-            return {"present": True, "source": f"user env {name}"}
+        if user_env_present(name):
+            return {"present": True, "source": f"user env {name} (metadata only)"}
     return {"present": False, "source": ""}
 
 
 def sufy_status() -> dict[str, Any]:
     import skill_paths
-
     folder = skill_paths.sufy_scripts_dir()
     found = (folder / "sufy_image2.py").is_file()
-    credential = Path(os.environ.get("LOCALAPPDATA", "")) / "JoyCode" / "credentials" / "sufy-image2.dpapi"
+    local = os.environ.get("LOCALAPPDATA")
+    credential = Path(local) / "JoyCode/credentials/sufy-image2.dpapi" if local else None
     return {"found": found, "path": str(folder) if found else "",
-            "credential": credential.is_file() or bool(os.environ.get("LTS4AI_API_KEY"))}
+            "credential": bool(credential and credential.is_file()) or bool(os.environ.get("LTS4AI_API_KEY"))}
 
 
 def hioffice_status() -> dict[str, Any]:
-    for port in HIOFFICE_PORTS:
-        with socket.socket() as sock:
-            sock.settimeout(0.3)
-            if sock.connect_ex(("127.0.0.1", port)) == 0:
-                return {"listening": True, "port": port}
-    return {"listening": False}
+    """Process presence, not authentication; no personal port or browser probing."""
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if os.name != "nt" or not shell:
+        return {"listening": False, "processPresent": False, "authenticationVerified": False}
+    try:
+        result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                                 "[bool](Get-Process -Name HiOffice -ErrorAction SilentlyContinue)"],
+                                capture_output=True, text=True, timeout=15)
+        present = result.returncode == 0 and result.stdout.strip().lower() == "true"
+        return {"listening": present, "processPresent": present, "authenticationVerified": False}
+    except (OSError, subprocess.SubprocessError):
+        return {"listening": False, "processPresent": False, "authenticationVerified": False}
+
+
+def directory_writable(directory: Path, check_only: bool = False) -> bool:
+    """Check the closest existing ancestor; temporary write probe is immediately removed."""
+    directory = Path(directory)
+    while not directory.exists() and directory != directory.parent:
+        directory = directory.parent
+    if not directory.is_dir():
+        return False
+    if check_only:
+        return os.access(directory, os.W_OK)
+    try:
+        with tempfile.TemporaryFile(prefix="mover-permission-", dir=directory):
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def permission_status(check_only: bool) -> dict[str, Any]:
+    items = {str(p): directory_writable(p, check_only) for p in
+             (SKILL, SKILL / "config", SKILL / "outputs", Path.home() / ".jdo-cli")}
+    return {"writable": all(items.values()), "directories": items,
+            "method": "access-check" if check_only else "temporary-write-probe"}
+
+
+def browser_status() -> dict[str, Any]:
+    """Find installed browser/tool files only. Never attach CDP or open a user tab."""
+    from skill_paths import installed_skill_dir
+    browsers = []
+    for base in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)"),
+                 os.environ.get("LOCALAPPDATA")):
+        if base:
+            browsers += [Path(base) / "Google/Chrome/Application/chrome.exe",
+                         Path(base) / "Microsoft/Edge/Application/msedge.exe"]
+    found = [str(p) for p in browsers if p.is_file()]
+    router = installed_skill_dir("browser-task-router")
+    node = shutil.which("node")
+    playwright = bool(shutil.which("playwright-cli"))
+    if router and (router / "scripts/toolbox.py").is_file():
+        try:
+            status = subprocess.run([sys.executable, "-X", "utf8", str(router / "scripts/toolbox.py"),
+                                     "status", "playwright-cli"], capture_output=True, text=True,
+                                    encoding="utf-8", timeout=20)
+            info = json.loads(status.stdout).get("playwright-cli") or {}
+            playwright = info.get("installation") == "installed"
+        except (OSError, ValueError, subprocess.SubprocessError):
+            playwright = False
+    return {"found": bool(found), "executables": found, "node": bool(node),
+            "router": bool(router and (router / "scripts/toolbox.py").is_file()),
+            "playwrightCli": playwright,
+            "cdpAttached": False, "loginVerified": False,
+            "note": "只检查安装文件；任务专属 Playwright/CDP 会话仍需按来源验证，禁止连接工作浏览器"}
+
+
+def readiness(report: dict[str, Any]) -> dict[str, bool]:
+    jdo = report.get("jdoCli") or {}
+    environment = (not report["deps"].get("missing")
+                   and report.get("permissions", {}).get("writable", False)
+                   and all(jdo.get(k) for k in ("binary", "python312", "runtime")))
+    identity = report.get("verifiedIdentity") or {}
+    business = (environment and report.get("store", {}).get("state") == "ok"
+                and bool(identity.get("profile")) and identity.get("profile") != "default"
+                and not report.get("errors"))
+    return {"environmentReady": bool(environment), "businessReady": bool(business)}
+
+
+def capability_status(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    local = not report["deps"].get("missing") and report.get("permissions", {}).get("writable", False)
+    states = readiness(report)
+    browser = report.get("browser") or {}
+    company = (report.get("apiKey") or {}).get("present", False)
+    external = report.get("sufyImage2") or {}
+    return {
+        "localDraft": {"available": bool(local), "requires": "本地输入、Python依赖和可写目录；无需生图 Key"},
+        "prePublishValidation": {"available": states["businessReady"],
+                                 "requires": "京麦 CLI 店铺连接、三要素核验和当前类目 reference；无需生图 Key"},
+        "companyGeneration": {"available": bool(local and company), "requires": "公司模型 Key（只查存在，不验证余额/模型可用性）"},
+        "externalGeneration": {"available": bool(local and external.get("found") and external.get("credential")),
+                               "requires": "sufy-image2 与使用者自己的 Key；DPAPI 文件存在不等于有效"},
+        "browserCollection": {"available": bool(browser.get("found") and browser.get("node") and browser.get("router") and browser.get("playwrightCli")),
+                              "requires": "浏览器路由器+Playwright、来源登录；未推广的 jd-taobao-hot-sales 不是自动安装前置"},
+    }
 
 
 def action(owner: str, kind: str, text: str) -> dict[str, str]:
@@ -322,6 +432,11 @@ def action(owner: str, kind: str, text: str) -> dict[str, str]:
 
 def next_actions(report: dict[str, Any]) -> list[dict[str, str]]:
     actions: list[dict[str, str]] = []
+    if report.get("permissions") and not report["permissions"].get("writable"):
+        actions.append(action("agent", "directory-permission", "请让助手将 Skill 安装到当前用户可写的 Skills 目录；不要写系统目录或覆盖已有文件"))
+    browser = report.get("browser")
+    if browser is not None and not (browser.get("found") and browser.get("node") and browser.get("router")):
+        actions.append(action("agent", "browser-optional", "只有在线浏览器采集需要：安装 Chrome/Edge、Node 和浏览器任务路由器的 Playwright；本地素材整理与京麦校验不受影响，勿连接工作浏览器"))
     if report["deps"].get("missing"):
         actions.append(action("agent", "python-deps", "用 Skill 目录下 .venv 安装 requirements.txt；失败时看 deps.detail"))
     jdo = report["jdoCli"]
@@ -339,8 +454,8 @@ def next_actions(report: dict[str, Any]) -> list[dict[str, str]]:
     if not profiles:
         actions.append(action("user", "store-identity", "告诉助手要操作的店铺名称（或店铺浏览器 .lnk）；助手据此建专属 Profile"))
         actions.append(action("user", "store-login", (
-            "在该店铺的京麦浏览器里完成 jdo-cli OAuth 授权（助手用 jingmai-cli-linker 或 "
-            "jdo-cli login --profile pop-<店铺拼音> 生成授权链接）")))
+            "先对助手说“京麦 CLI 店铺连接”，在目标店铺专属浏览器里授权；"
+            "不要让本 Skill 复制授权代码、Cookie 或 Token，不使用 default Profile")))
     if store.get("state") != "ok":
         actions.append(action("agent", "store-config", (
             "授权成功后运行 bootstrap.py --profile <Profile> 回查 venderinfo 并生成 config/store.local.json；"
@@ -349,7 +464,7 @@ def next_actions(report: dict[str, Any]) -> list[dict[str, str]]:
         actions.append(action("agent", "freight-template", "store.local.json 的 business.freightTemplateId 还是 0；需整店搬运时填写真实运费模板"))
     if not report["apiKey"].get("present"):
         actions.append(action("agent", "image-key", (
-            "需要生图时：在 https://oxygen-model.jd.com/gateway/api-key 领取个人 Key，写入用户环境变量 JD_LLM_API_KEY；"
+            "需要生图时：按公司模型门户配置自己的 Key，存在性自检不读取值；"
             "不得写入仓库、日志或聊天")))
     if not report["sufyImage2"].get("found"):
         actions.append(action("agent", "sufy-image2", (
@@ -357,7 +472,7 @@ def next_actions(report: dict[str, Any]) -> list[dict[str, str]]:
             "Key 由使用者本人配置（DPAPI 或 LTS4AI_API_KEY）")))
     if not report["hiOffice"].get("listening"):
         actions.append(action("agent", "hioffice", (
-            "SkillHub/内网网关鉴权需要 HiOffice 主客户端在运行（本地 8988 起端口），并保持京ME 登录；"
+            "需要内网鉴权的操作请保持京ME、HiOffice 登录运行；公开 SkillHub 安装下载不依赖固定端口。"
             "启动 HiOffice.exe 后重试")))
     return actions
 
@@ -396,7 +511,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     report: dict[str, Any] = {"skill": str(SKILL), "python": sys.version.split()[0], "checkOnly": args.check}
-    report["deps"] = ensure_venv(args.check)
+    report["permissions"] = permission_status(args.check)
+    if report["permissions"]["writable"]:
+        report["deps"] = ensure_venv(args.check)
+    else:
+        report["deps"] = {"missing": list(REQUIRED_MODULES), "python": "", "detail": "directory is not writable"}
     exe, origin = find_jdo_cli()
     if exe and origin == "sibling-skill" and not args.check:
         exe, origin = install_jdo_cli_from(exe), "copied-from-sibling-skill"
@@ -436,15 +555,17 @@ def main(argv: list[str] | None = None) -> int:
     report["apiKey"] = describe_key()
     report["sufyImage2"] = sufy_status()
     report["hiOffice"] = hioffice_status()
+    report["browser"] = browser_status()
+    report.update(readiness(report))
+    report["capabilities"] = capability_status(report)
+    report["resultDirectory"] = str(SKILL / "outputs")
     report["nextActions"] = next_actions(report) + [
         action("user" if "login" in item["error"].lower() or "token" in item["error"].lower() else "agent",
                "store-login" if item["step"] == "venderinfo" else item["step"],
                f"{item['step']} 失败：{item['error']}")
         for item in errors
     ]
-    report["ready"] = not any(item["kind"] in {"python-deps", "jdo-cli", "python312",
-                                               "jdo-runtime", "store-identity", "store-login", "store-config"}
-                              for item in report["nextActions"])
+    report["ready"] = report["environmentReady"]  # installation, not authority to publish
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 

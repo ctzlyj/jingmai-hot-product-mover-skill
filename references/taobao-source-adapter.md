@@ -1,5 +1,7 @@
 # 淘宝来源适配
 
+> 采销推广前置：jd-taobao-hot-sales 暂不推广，缺失时可选浏览器测试跳过，不自动安装。真实采集需当前可用的合法适配器、任务专属 Playwright/CDP 和来源本人登录；没有则停在采集前，已有完整 --capture 可走本地草稿。详见 installation-and-configuration.md。
+
 ## 路由
 
 淘宝链接只新增来源采集适配器，继续复用现有 `manifest/listing`、图片上传、逐 SKU 定价、视频绑定、状态机和发布后审计。新来源先完成一个商品的 `LOCAL_DRAFT` MVP，不直接批量。

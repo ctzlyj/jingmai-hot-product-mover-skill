@@ -1,5 +1,6 @@
 ---
 name: jd-jingmai-hot-product-mover
+version: 1.1.1
 description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复、新增来源/类目适配，以及本店在售链接的同款矩阵换主图上架；不用于绕过登录、平台权限、版权授权或营销活动报名。
 ---
 
@@ -9,19 +10,25 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 每次真实任务同时用于改进本个人版：记录各阶段耗时、重复调用、失败与恢复证据，优先减少重复取数、复用同店铺素材和采用已验证的批量流程。只沉淀已复现、根因确认且修复验证通过的改进；优化不能代替本批业务完成，也不能以省略商家原码、错店保护、精确定价、幂等或独立回查换速度。工具选择和授权内恢复由助手自主完成。
 
-## 首次使用（同事从 SkillHub 安装后先做）
+## 采销标准提示词（安装后第一步先自检）
+
+> 请根据 https://o2.jd.com/install-skill.md，安装 skillId 11153@最新版本；读实际安装目录的 SKILL.md，先运行首次自检，自动补齐环境并说明可用功能和结果目录。店铺未授权时提示我先用“京麦 CLI 店铺连接”，不要复制授权代码。等我提供商品与店铺后，做到发布前校验，正式上架等我确认。
+
+“最新版本”不作为 version 字符串传给下载接口；不传版本即下载最新已发布版。安装目录可为 .joycode/.codex/.agents/skills 或 skill-<id>，以安装回执及 SKILL.md 的实际位置为准。
+
+## 首次自检
+
+助手先从实际安装目录运行：
 
 ```powershell
-python -X utf8 scripts\bootstrap.py --json
+python -X utf8 scripts/bootstrap.py --json
 ```
 
-脚本自动建 Skill 内 `.venv` 并装依赖（官方源慢时自动换清华/腾讯镜像）、找到或复制 jdo-cli、定位 Python 3.12 并提取大请求体运行时、列出已登录 Profile、检查生图 Key/sufy-image2/HiOffice。只按返回的 `nextActions` 处理：`owner=agent` 由助手自己解决；`owner=user` 只有两类——告诉助手**店铺身份**（店铺名或店铺浏览器 .lnk），以及在该店铺浏览器里完成**京麦授权登录**（助手用 `jingmai-cli-linker` 或 `jdo-cli login --profile pop-<拼音>` 生成链接）。授权后运行：
+检查 Python/依赖、jdo-cli、浏览器、模型 Key 存在性、目录权限；后台进程隐藏窗口，不碰工作浏览器。只查 Key 是否存在，不读取/打印、不解密 DPAPI。缺项按 nextActions 处理；店铺身份和登录需要本人完成“京麦 CLI 店铺连接”，禁止 default 和复制授权代码。
 
-```powershell
-python -X utf8 scripts\bootstrap.py --json --profile pop-<拼音> --category-id <叶子类目> --category-name <类目名> [--brand-category-id <三级类目>]
-```
+成功看到 environmentReady=true（安装通过），businessReady 表示本次店铺授权核验结果，二者不是正式上架结果。capabilities 列出无 Key/无浏览器时哪些能用：本地草稿与京麦校验不需要生图 Key；图片重制必须有对应模型 Key；淘宝采集必须有合法来源登录和可用适配器。完整前置条件见 references/installation-and-configuration.md。
 
-它回查 venderinfo 后生成 `config/store.local.json`（已有不覆盖）并刷新类目 reference；叶子类目报「不是三级类目」时补 `--brand-category-id`。运费模板 ID 从店铺现有商品 `logisticsInfo.transportId` 读取后填写。Key、Token、店铺配置只留在使用者本机，不进仓库或 SkillHub 包。
+结果目录由自检的 resultDirectory 返回；每批草稿、预检和发布体放入本批结果目录。助手成功后给实际绝对路径和校验结果，未经确认不调用正式上架。
 
 ## 使用前
 

@@ -6,3 +6,9 @@ config/*.store.json
 config/*.reference.json
 outputs/
 links.txt
+
+.pytest_cache/
+*.log
+*.tmp
+*.dpapi
+.env

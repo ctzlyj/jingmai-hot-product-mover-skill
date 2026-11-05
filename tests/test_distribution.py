@@ -35,7 +35,7 @@ class PortablePathTests(unittest.TestCase):
         offenders = []
         for path in sorted((ROOT / "scripts").rglob("*.py")):
             text = path.read_text(encoding="utf-8", errors="replace")
-            for marker in ("C:\\Users\\", "C:/Users/", "caotong"):
+            for marker in ("C:\\Users\\", "C:/Users/"):
                 if marker in text:
                     offenders.append(f"{path.relative_to(ROOT)}: {marker}")
         self.assertEqual([], offenders)

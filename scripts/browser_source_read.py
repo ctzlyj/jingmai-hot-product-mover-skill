@@ -9,6 +9,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
+from skill_paths import installed_skill_dir
 
 
 class BrowserReadError(RuntimeError):
@@ -16,8 +17,9 @@ class BrowserReadError(RuntimeError):
 
 
 def run_read_script(script, *, toolbox=None, timeout=75):
-    toolbox = Path(toolbox) if toolbox else Path.home() / ".agents/skills/browser-task-router/scripts/toolbox.py"
-    if not toolbox.is_file():
+    router = installed_skill_dir("browser-task-router") if not toolbox else None
+    toolbox = Path(toolbox) if toolbox else (router / "scripts/toolbox.py" if router else None)
+    if toolbox is None or not toolbox.is_file():
         raise BrowserReadError("Browser router is not installed; select an available authorized read-only provider")
     session = "mover-read-" + uuid.uuid4().hex[:16]
     environment = {key: value for key, value in os.environ.items()

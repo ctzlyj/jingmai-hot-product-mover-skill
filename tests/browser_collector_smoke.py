@@ -8,12 +8,33 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from browser_source_read import run_read_script
+from skill_paths import installed_skill_dir
+from bootstrap import browser_status
+import shutil
 from jd_product_mover import parse_video_response
 from taobao_product_mvp import load_browser_capture, build_source
 from test_browser_source_read import taobao_response
 
 
 class BrowserCollectorSmokeTests(unittest.TestCase):
+    def setUp(self):
+        if not shutil.which("node"):
+            self.skipTest("Optional Node/Playwright browser prerequisites are not installed")
+        if self._testMethodName == "test_linked_taobao_description_waits_for_hydration":
+            provider = installed_skill_dir("jd-taobao-hot-sales")
+            if not provider or not (provider / "package.json").is_file() or not (provider / "lib/config.mjs").is_file():
+                self.skipTest("Optional jd-taobao-hot-sales provider is not distributed; Taobao browser smoke skipped")
+            probe = subprocess.run(["node", "-e", "require(require.resolve('playwright-core', {paths:[process.argv[1]]}))",
+                                    str(provider)], capture_output=True, timeout=20)
+            if probe.returncode:
+                self.skipTest("Optional Playwright provider dependencies missing")
+        else:
+            router = installed_skill_dir("browser-task-router")
+            if not router or not (router / "scripts/toolbox.py").is_file():
+                self.skipTest("Optional browser-task-router/Playwright CLI missing; no browser is started")
+            if not browser_status().get("playwrightCli"):
+                self.skipTest("Optional Playwright CLI installation missing; no browser is started")
+
     def test_linked_taobao_description_waits_for_hydration(self):
         response = taobao_response()
         response["item"]["pcADescUrl"] = "https://market.m.taobao.com/app/detail-project/desc/index.html?id=123&descVersion=7"
@@ -36,7 +57,7 @@ class BrowserCollectorSmokeTests(unittest.TestCase):
           const capture = await readTaobaoProduct(page, 'https://item.taobao.com/item.htm?id=123', {timeout:5000});
           return {...capture, remainingPages:page.context().pages().length};
         }'''.replace("__MODULE__", json.dumps(module)).replace("__HTML__", json.dumps(html))
-        provider = Path.home() / ".joycode/skills/jd-taobao-hot-sales"
+        provider = installed_skill_dir("jd-taobao-hot-sales")
         if not (provider / "package.json").is_file():
             self.skipTest("Installed Playwright provider required for isolated browser smoke")
         harness = '''import {createRequire} from 'node:module';
