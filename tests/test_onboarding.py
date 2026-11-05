@@ -22,7 +22,7 @@ class OnboardingTests(unittest.TestCase):
             self.assertIn(word,text)
     def test_skill_starts_with_version_prompt_and_selfcheck(self):
         text=(ROOT/'SKILL.md').read_text(encoding='utf-8')
-        self.assertRegex(text.split('---')[1], r'version: 1\.1\.[01]')
+        self.assertRegex(text.split('---')[1], r'version: 1\.1\.[012]')
         top=text.split('## 使用前')[0]
         for word in ('11153@最新版本','bootstrap.py','environmentReady','businessReady','结果目录'):
             self.assertIn(word,top)
@@ -81,6 +81,16 @@ class OnboardingTests(unittest.TestCase):
                               'store':{'state':'ok'},'verifiedIdentity':{'profile':'pop-test'},
                               'errors':[{'step':'reference','error':'blocked'}]})
         self.assertFalse(state['businessReady'])
+    def test_incomplete_or_mismatched_store_identity_is_not_ready(self):
+        report={'deps':{'missing':[]},'permissions':{'writable':True},
+                'jdoCli':{'binary':'exe','python312':'py','runtime':'rt'},
+                'store':{'state':'ok'},'errors':[],
+                'verifiedIdentity':{'profile':'pop-test','venderId':0,'shopName':''}}
+        self.assertFalse(boot.readiness(report)['businessReady'])
+        report['verifiedIdentity'].update(venderId=9,shopName='店')
+        report['storeIdentityMatches']=False
+        self.assertFalse(boot.readiness(report)['businessReady'])
+
     def test_permission_probe_leaves_no_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder=Path(tmp)

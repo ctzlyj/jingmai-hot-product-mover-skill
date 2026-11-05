@@ -404,6 +404,8 @@ def readiness(report: dict[str, Any]) -> dict[str, bool]:
     identity = report.get("verifiedIdentity") or {}
     business = (environment and report.get("store", {}).get("state") == "ok"
                 and bool(identity.get("profile")) and identity.get("profile") != "default"
+                and int(identity.get("venderId") or 0) > 0 and bool(identity.get("shopName"))
+                and report.get("storeIdentityMatches", True)
                 and not report.get("errors"))
     return {"environmentReady": bool(environment), "businessReady": bool(business)}
 
@@ -551,6 +553,14 @@ def main(argv: list[str] | None = None) -> int:
                 report["reference"] = step["value"]
             else:
                 errors.append(step)
+    if args.profile and report.get("verifiedIdentity"):
+        configured = json.loads(store_path.read_text(encoding="utf-8-sig")) if store_path.is_file() else {}
+        expected = (configured.get("stores") or {}).get(args.profile) or configured.get("store") or {}
+        actual = report["verifiedIdentity"]
+        report["storeIdentityMatches"] = all(str(expected.get(k) or "") == str(actual.get(k) or "")
+                                             for k in ("profile", "venderId", "shopName"))
+        if not report["storeIdentityMatches"]:
+            errors.append({"step": "store-config", "error": "所选 Profile、venderId、店名与本地配置不匹配；先核对京麦 CLI 店铺连接，禁止写入"})
     report["errors"] = errors
     report["apiKey"] = describe_key()
     report["sufyImage2"] = sufy_status()
