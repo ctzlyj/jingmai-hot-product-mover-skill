@@ -41,7 +41,7 @@
 2. init 建包；reference 只读采集参考风格，助手查看缓存图总结版式、配色、卖点结构（仅文字 styleSummary）。原图仅在 .reference-cache 分析，绝不作为生成输入或发布素材。无参考时由助手设计统一风格。
 3. 识图与实时模板：展示商品名、候选类目和照片可证实的卖点。运行 refresh 获取当前店铺类目、品牌、材质等必填字段；questions 把缺项集中问一次。实际品牌名称解析为本店授权 brandId；无品牌仅在模板允许 -1 时可用。尺寸/重量/材质等不能从参考商品复制。看不清或归属不明的配件需要补拍/确认。
 4. 用户回答后 set-facts；facts.confirmed=true 仅可在用户确实给出/确认事实时设置。库存与价格逐 SKU 指定，不应用竞品折扣公式。SKU 个数来自用户真实清单，不做笛卡尔积、猜缺项或丢弃 SKU。saleDimensions 最多两维（复用已有发布 Schema 能力）；更多维度明确停止，不截断。
-5. make-plan→generate：三模型独立并发、动态派空闲槽；生成白底首图、其他主图、每个真实 SKU 图、3 张竖版详情模块，按顺序拼成长图。make-plan --preview 可先做不含未确认参数的三张外观草稿；previewOnly=true 时不能上架，不生成不确定的 SKU/参数图。
+5. make-plan→generate：三模型独立并发、动态派空闲槽；生成白底首图、其他主图、每个真实 SKU 图和 6–8 个竖版详情模块（由 `detail-plan.json` 驱动，每模块一张、宽 790，不再拼成一张长图；详见 `detail-pages.md`）。make-plan --preview 可先做不含未确认参数的三张外观草稿；previewOnly=true 时不能上架，不生成不确定的 SKU/参数图。
 6. review 输出 preview.html 和确认清单.md；助手逐图核对商品结构、颜色、文字和配件，告知用户实际模型切换情况。已知问题登记在 manifest.qualityProblems，未修正不允许 accept-images。用户可指定一张 generate --redo <任务ID>，不重跑已成功图；资料或图片变更会使确认摘要失效。
 7. 用户接受图片后 accept-images；prepare 上传一次素材、构建 Schema、调用平台 validations，遇到强违规停止。prepare 会产生图片空间写入，但不创建商品。给用户正式发布确认清单和当前 reviewDigest，再确认后 publish。没有用户确认不能为了实测而填写确认字符串。
 8. verify 分别读取申请、正式商品和库存专用接口，核对商品/SKU/价/库存/主图组/详情；draftComputeStatus=3 停止并报驳回。VERIFIED 才表示上架回查通过，且此时 manifest 填真实 productId/skuIds、商家码、图片路径/线上 URL。

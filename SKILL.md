@@ -1,6 +1,6 @@
 ---
 name: jd-jingmai-hot-product-mover
-version: 1.2.1
+version: 1.2.2
 description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复、新增来源/类目适配，以及本店在售链接的同款矩阵换主图上架；不用于绕过登录、平台权限、版权授权或营销活动报名。
 ---
 
@@ -19,11 +19,12 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 1. 只问一次是否有参考京东链接；记录有/无。有则用 `scripts/photo_listing.py reference` 只读采集参考主图和详情作风格分析，绝不把参考图作为商品输入或直接上传。无则助手从实拍设计统一风格。
 2. 识图后列商品名称、类目候选和有照片依据的卖点。用实时模板生成缺项清单，一次集中问品牌、逐SKU规格/价格/库存、尺寸重量、材质等；不清楚的部件要求补拍，不猜参数。用“京麦 CLI 店铺连接”核实明确店铺 Profile/venderId/店名，禁止 default。
 3. 用 `scripts/photo_listing.py` 编排 `scripts/photo_generation.py`：仅公司网关 GPT-Image-2.5-Flare-joybuilder、GPT-Image-2.5-Sunburst-joybuilder、GPT-image-2-joybuilder，三款独立并发并按空闲槽调度。失败只在三款内部切换并通知用户；结果未知先对账，不调用其他模型，不改变旧矩阵模式和定稿爆款提示词。
-4. 输出白底主图、场景主图、逐SKU图和详情长图；给用户预览，单张重做不重生成成功图。存在结构、文字或配件归属疑点时不得通过图片确认。图片确认、平台准备与正式发布是分开的确认门槛。
-5. 实时模板预检/平台校验后给完整清单（店铺/类目/标题/品牌/包装物流/逐SKU价库存/图片）；只有用户明确确认当前摘要后发布。提交前原子记录 SUBMITTING，异常只回查，按商品与库存专用接口核对SKU/价格/库存/图片，完成后才标 VERIFIED。
-6. 标准交付 `listing-package/`（manifest.json + 主图/详情图/SKU图）。后续视频/信息分 Skill 只读这个包。给定包和本地 MP4，运行 `scripts/photo_video.py`：一次上传、逐SKU绑定、回查审核；已有其他视频即停止，不覆盖。
+4. 输出白底主图、场景主图、逐SKU图和**完整详情页**；给用户预览，单张重做不重生成成功图。存在结构、文字或配件归属疑点时不得通过图片确认。图片确认、平台准备与正式发布是分开的确认门槛。
+   详情页由 Skill 自动规划，用户不需要提醒、也不需要写详情提示词：`make-plan` 先产出 `detail-plan.json`（默认 6–8 个竖版模块、宽 790px：首屏价值、核心卖点、**覆盖全部 SKU 的款式/组合选择**、真实场景、结构细节、参数与包装、注意事项与售后），再按模块逐张生图。少于 6 张或缺必需模块、未覆盖全部 SKU、重复/不可读/宽度不对、含参考原图，`accept-images`/`prepare`/`publish` 一律拒绝；只有用户明确“只要一张/少量”或平台限制时，才可在 `facts.detailPolicy` 写明原因后放行，确认清单会显示该原因。
+5. 实时模板预检/平台校验后给完整清单（店铺/类目/标题/品牌/包装物流/逐SKU价库存/图片/**详情页总图数与模块列表+总览图**）；只有用户明确确认当前摘要后发布。提交前原子记录 SUBMITTING，异常只回查，按商品与库存专用接口核对SKU/价格/库存/图片，并同时回读 **PC 与手机端**详情的图数与 URL 顺序，完成后才标 VERIFIED。回复必须用 `deliveryChecks` 四项（platformValidationPassed / productOnSale / detailQualityPassed / videoBound）分别报告；任一失败不得写“上架完成/全部完成”。
+6. 标准交付 `listing-package/`（manifest.json 含 detailPlan/deliveryChecks + 主图/详情图/SKU图）。后续视频/信息分 Skill 只读这个包。已上架但详情不完整时用 `scripts/detail_repair.py`（plan→generate→review→用户确认→apply，只 PATCH WareEditor PC/手机端，不动价格/库存/SKU/主图/视频；结果不明只回查）。给定包和本地 MP4，运行 `scripts/photo_video.py`：一次上传、逐SKU绑定、回查审核；已有其他视频即停止，不覆盖。
 
-完整接口与状态机见 `references/photo-new-listing.md`，商品确认规则与数据契约见 `references/listing-package.schema.json`。
+完整接口与状态机见 `references/photo-new-listing.md`，详情页方案/门槛/补救见 `references/detail-pages.md`，商品确认规则与数据契约见 `references/listing-package.schema.json`。
 
 ## 采销标准提示词（安装后第一步先自检）
 

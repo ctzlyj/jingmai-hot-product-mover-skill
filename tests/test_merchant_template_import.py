@@ -87,7 +87,8 @@ class MerchantTemplateImportTests(unittest.TestCase):
     def prepare_assets(self, root: Path) -> None:
         for index in range(1, 4):
             write_image(root / "主图" / f"main_{index:02d}.jpg")
-        write_image(root / "详情图" / "detail_001.jpg")
+        for detail_index in range(1, 7):  # complete detail page: the 1-image shape is now rejected pre-publish
+            write_image(root / "详情图" / f"detail_{detail_index:03d}.jpg")
         write_image(root / "SKU图" / "style-a.jpg")
         write_image(root / "SKU图" / "style-b.jpg")
 

@@ -132,6 +132,88 @@
     },
     "facts": {
       "type": "object"
+    },
+    "detailPlan": {
+      "type": "object",
+      "description": "detail-plan.json 摘要：模块数、每模块 kind/本地路径/覆盖SKU/线上URL、PC与mobile回读结果",
+      "properties": {
+        "moduleCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "width": {
+          "enum": [
+            750,
+            790
+          ]
+        },
+        "exemption": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "readback": {
+          "type": "object"
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "localPath"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "localPath": {
+                "type": "string"
+              },
+              "skuKeys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "onlineUrl": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "deliveryChecks": {
+      "type": "object",
+      "description": "四项分别记录，任一失败不得称“全部完成”",
+      "properties": {
+        "platformValidationPassed": {
+          "type": "boolean"
+        },
+        "productOnSale": {
+          "type": "boolean"
+        },
+        "detailQualityPassed": {
+          "type": "boolean"
+        },
+        "videoBound": {
+          "type": "boolean"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "checkedAt": {
+          "type": "string"
+        }
+      }
     }
   },
   "$defs": {
@@ -155,6 +237,18 @@
         },
         "previewOnly": {
           "type": "boolean"
+        },
+        "module": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skuKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }
@@ -171,7 +265,9 @@
       "then": {
         "required": [
           "category",
-          "verification"
+          "verification",
+          "deliveryChecks",
+          "detailPlan"
         ],
         "properties": {
           "productId": {

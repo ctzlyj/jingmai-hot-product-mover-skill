@@ -824,6 +824,11 @@ def validate_manifest(path: Path, manifest: dict[str, Any], reference: dict[str,
             warnings.append(
                 f"主图视频已下载归档；商品发布后由素材接口自动上传、转码并逐SKU绑定：{resolved_video}"
             )
+    try:
+        from detail_pages import listing_detail_errors
+        errors.extend(listing_detail_errors(images, product))
+    except ImportError:  # synced standalone copies without the detail module keep legacy behaviour
+        pass
     if any(item.get("role") == "detail" for item in images):
         warnings.append("详情图按输入清单全部保留；脚本不因图片中的价格、榜单或宣传文字自动剔除图片")
     return errors, warnings
@@ -969,17 +974,29 @@ def build_publish_schema(manifest: dict[str, Any]) -> list[dict[str, Any]]:
             f"<p><img style='max-width:790px;' src='{detail_image_url(uploaded_image_url(item))}'/></p>"
             for item in detail_images
         )
-        components.append({
-            "componentCode": "WareEditor",
-            "value": [{
+        editor_entries = [{
+            "componentCode": "detail",
+            "properties": [
+                property_item("desc", detail_html),
+                property_item("zhuangBaUseFlag", "0"),
+                property_item("userAgent", "pc"),
+            ],
+        }]
+        if product.get("detailMobile") is not False:
+            # Mobile detail mirrors the PC image order so both channels read back identically.
+            mobile_html = "".join(
+                f"<p><img style='max-width:100%;' src='{detail_image_url(uploaded_image_url(item))}'/></p>"
+                for item in detail_images
+            )
+            editor_entries.append({
                 "componentCode": "detail",
                 "properties": [
-                    property_item("desc", detail_html),
+                    property_item("desc", mobile_html),
                     property_item("zhuangBaUseFlag", "0"),
-                    property_item("userAgent", "pc"),
+                    property_item("userAgent", "mobile"),
                 ],
-            }],
-        })
+            })
+        components.append({"componentCode": "WareEditor", "value": editor_entries})
     components.append({"componentCode": "WareSevenDayReturn", "value": product["sevenDayReturnCode"]})
 
     category_values = []

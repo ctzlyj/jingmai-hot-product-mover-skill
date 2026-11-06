@@ -20,5 +20,26 @@ class PhotoModeGuidanceTests(unittest.TestCase):
         self.assertIn('尚待真实商品验收', text)
         self.assertIn('不改变旧矩阵模式', text)
 
+class DetailPageGuidanceTests(unittest.TestCase):
+    def test_skill_and_references_state_the_detail_gate_without_asking_the_user(self):
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('version: 1.2.2', skill)
+        for word in ('detail-plan.json', '6–8', '覆盖全部 SKU', 'deliveryChecks', 'detail_repair.py', '不需要提醒'):
+            self.assertIn(word, skill)
+        doc = (ROOT / 'references' / 'detail-pages.md').read_text(encoding='utf-8')
+        for word in ('DETAIL_PATCH', 'WareEditor', 'mobileDesc', 'platformValidationPassed', 'detailQualityPassed', 'videoBound', 'image-studio'):
+            self.assertIn(word, doc)
+
+    def test_detail_repair_never_names_price_stock_sku_or_video_writers(self):
+        text = (ROOT / 'scripts' / 'detail_repair.py').read_text(encoding='utf-8')
+        for forbidden in ('photo_video', 'sku-materials', 'WareSkuImg', 'SkuJdprice', 'SkuStockNum'):
+            self.assertNotIn(forbidden, text)
+
+    def test_detail_modules_do_not_call_non_company_image_models(self):
+        text = (ROOT / 'scripts' / 'detail_pages.py').read_text(encoding='utf-8')
+        for forbidden in ('Oxygen', 'sufy', 'requests'):
+            self.assertNotIn(forbidden, text)
+
+
 if __name__ == '__main__':
     unittest.main()

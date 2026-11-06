@@ -4,16 +4,18 @@ from unittest.mock import patch
 from PIL import Image
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'scripts'));sys.path.insert(0,str(ROOT/'tests'))
 import photo_listing as pl
+import detail_pages as dp
 from test_photo_contract import facts,reference
 from photo_contract import initial_manifest
 from photo_generation import atomic_json
+from detail_fixtures import valid_detail_set
 
 class PhotoListingTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)/'listing-package';self.root.mkdir()
   self.store={'profile':'pop-test','venderId':1,'shopName':'测试'}
   for name in ('photo.png','main.jpg','sku.jpg','detail.jpg'):Image.new('RGB',(800,800),'white').save(self.root/name)
-  self.m=initial_manifest(self.store,['photo.png'],'测试收纳架',None);self.m['facts']=facts();self.m['mainImages']=[{'localPath':'main.jpg','role':'white'}];self.m['detailImages']=[{'localPath':'detail.jpg'}];self.m['variants']=[{'key':'one','skuImage':{'localPath':'sku.jpg'}}]
+  self.m=initial_manifest(self.store,['photo.png'],'测试收纳架',None);self.m['facts']=facts();self.m['mainImages']=[{'localPath':'main.jpg','role':'white'}];self.m['variants']=[{'key':'one','skuImage':{'localPath':'sku.jpg'}}];valid_detail_set(self.root,self.m)
   atomic_json(self.root/'manifest.json',self.m)
  def test_reference_choice_is_required_once(self):
   with self.assertRaises(ValueError):pl.create_package(self.root.parent/'new',self.store,[self.root/'photo.png'],'title',reference_answered=False)
@@ -79,11 +81,12 @@ class PhotoReadbackTests(unittest.TestCase):
  setUp=PhotoListingTests.setUp
  def prepare_readback(self):
   m=self.m;m['productId']=100;listing=pl.build_listing(m,self.root,reference());sku=listing['skus'][0]
-  for item in listing['images']:item['upload']={'imgUrl':{'spu_main':'jfs/spu.jpg','sku_main':'jfs/sku.jpg','detail':'jfs/detail.jpg'}[item['role']]}
+  for item in listing['images']:item['upload']={'imgUrl':{'spu_main':'jfs/spu.jpg','sku_main':'jfs/sku.jpg','detail':'jfs/'+item['imageKey']+'.jpg'}[item['role']]}
+  urls=[pl.cli.detail_image_url(i['upload']['imgUrl']) for i in listing['images'] if i['role']=='detail']
   m['variants'][0]['vendorSku']=sku['vendorSku'];atomic_json(self.root/'manifest.json',m);atomic_json(self.root/'listing.json',listing)
   remote={'skuId':101,'outerId':sku['vendorSku'],'priceInfo':{'jdPrice':10.50},'stockNum':12,'skuEnableStatus':1,'skuStats':{'onOffShelfStatus':1},'saleAttrs':[{'attrValueAlias':'白色','attrValues':'color-one'}]}
   detail={'productInfo':{'productName':'测试收纳架','productStatus':{'productStatusNew':1},'categoryDetail':{'lastCategoryId':1}},'skuList':[remote]}
-  apply={'applyInfo':{'draftComputeStatus':2},'skuList':[remote], 'productInfo':{'productDetailDesc':{'desc':"<img src='https://img10.360buyimg.com/imgzone/jfs/detail.jpg'>"}},'material':{'mainImages':[{'uuid':'0000000000','imageInfoList':[{'imgUrl':'jfs/spu.jpg','orderSort':1}]},{'uuid':'color-one','imageInfoList':[{'imgUrl':'jfs/sku.jpg','orderSort':1}]}]}}
+  apply={'applyInfo':{'draftComputeStatus':2},'skuList':[remote], 'productInfo':{'productDetailDesc':{'desc':dp.detail_html(urls),'mobileDesc':dp.detail_html(urls,mobile=True)}},'material':{'mainImages':[{'uuid':'0000000000','imageInfoList':[{'imgUrl':'jfs/spu.jpg','orderSort':1}]},{'uuid':'color-one','imageInfoList':[{'imgUrl':'jfs/sku.jpg','orderSort':1}]}]}}
   return detail,apply
  def test_verify_exports_online_product_and_sku_ids(self):
   detail,apply=self.prepare_readback()

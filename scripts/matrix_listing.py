@@ -636,6 +636,12 @@ def command_build(args: argparse.Namespace) -> int:
     apply = source_apply_data(run)
     _, keep = load_variants(Path(args.variants or run / "variants.json"))
     uploads = load_json(run / "generated" / args.variant / "uploads.json", {}) or {}
+    import detail_pages as _detail
+    _detail_problems = _detail.source_detail_problems(
+        (apply.get("productInfo") or {}).get("productDetailDesc") or {},
+        os.environ.get("MATRIX_DETAIL_EXEMPTION_REASON", ""))
+    if _detail_problems:
+        raise MatrixError("；".join(_detail_problems))
     components, plan = build_matrix_listing(apply, args.variant, uploads, keep, args.white_background)
     schema = json.dumps(components, ensure_ascii=False, separators=(",", ":"))
     out = run / "publish" / args.variant
