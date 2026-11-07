@@ -138,6 +138,25 @@ class VerifyDetailTests(unittest.TestCase):
         self.assertTrue(all(x['onlineUrl'] for x in m['detailPlan']['modules']))
 
 
+class LiveStatusTests(unittest.TestCase):
+    setUp = PhotoListingTests.setUp
+    verify = VerifyDetailTests.verify
+    readback = VerifyDetailTests.readback
+    def test_live_on_sale_status_103_counts_as_on_sale(self):
+        detail, apply, urls = self.readback(); detail['productInfo']['productStatus']['productStatusNew'] = 103
+        r = self.verify(detail, apply); self.assertEqual('VERIFIED', r['status']); self.assertTrue(read(self.root)['deliveryChecks']['productOnSale'])
+    def test_status_1_is_accepted_and_only_1_and_103(self):
+        self.assertEqual((1, 103), pl.ON_SALE_STATUSES)
+        detail, apply, urls = self.readback(); detail['productInfo']['productStatus']['productStatusNew'] = 1
+        self.assertEqual('VERIFIED', self.verify(detail, apply)['status'])
+    def test_104_105_and_other_statuses_are_not_on_sale(self):
+        for status in (104, 105, 0, 2, 8, 102, 1030):
+            detail, apply, urls = self.readback(); detail['productInfo']['productStatus']['productStatusNew'] = status
+            r = self.verify(detail, apply)
+            self.assertEqual('VERIFICATION_FAILED', r['status'], status); self.assertIn('product not on sale', r['problems'], status)
+            self.assertFalse(read(self.root)['deliveryChecks']['productOnSale'], status); self.assertNotIn('上架完成', r['statement'], status)
+
+
 class DetailRepairTests(unittest.TestCase):
     setUp = PhotoListingTests.setUp
     def published(self):

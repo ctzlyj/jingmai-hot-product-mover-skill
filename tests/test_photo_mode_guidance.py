@@ -23,7 +23,7 @@ class PhotoModeGuidanceTests(unittest.TestCase):
 class DetailPageGuidanceTests(unittest.TestCase):
     def test_skill_and_references_state_the_detail_gate_without_asking_the_user(self):
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
-        self.assertIn('version: 1.2.2', skill)
+        self.assertIn('version: 1.2.3', skill)
         for word in ('detail-plan.json', '6–8', '覆盖全部 SKU', 'deliveryChecks', 'detail_repair.py', '不需要提醒'):
             self.assertIn(word, skill)
         doc = (ROOT / 'references' / 'detail-pages.md').read_text(encoding='utf-8')
@@ -39,6 +39,16 @@ class DetailPageGuidanceTests(unittest.TestCase):
         text = (ROOT / 'scripts' / 'detail_pages.py').read_text(encoding='utf-8')
         for forbidden in ('Oxygen', 'sufy', 'requests'):
             self.assertNotIn(forbidden, text)
+
+
+class StructuredAttributeGuidanceTests(unittest.TestCase):
+    def test_docs_state_prevalidation_is_not_proof_and_the_discovery_order(self):
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('平台预校验通过不代表其别名正确', skill); self.assertIn('discover-sale-templates', skill)
+        doc = (ROOT / 'references' / 'structured-sale-attributes.md').read_text(encoding='utf-8')
+        for word in ('平台预校验通过不代表属性正确', 'sale-attr-templates', '同店、同末级类目', 'templateSkuProps', 'confirm-not-created', 'REJECTED_CONFIRMED', '103'):
+            self.assertIn(word, doc)
+        self.assertTrue((ROOT / 'CHANGELOG.md').read_text(encoding='utf-8').startswith('# Changelog\n\n## 1.2.3'))
 
 
 if __name__ == '__main__':

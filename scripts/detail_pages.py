@@ -96,9 +96,11 @@ def build_detail_plan(manifest, root, *, identity_rules, style, reference_terms=
     title = facts.get('title') or manifest['title']
     points = [str(p) for p in (facts.get('sellingPoints') or []) if str(p).strip()]
     detail = facts.get('detail') or {}
+    included = [str(x) for x in (facts.get('includedItems') or []) if str(x).strip()]
+
     def context_for(chunk):
         specs = [s['spec'] for s in (chunk if chunk else skus)]
-        return identity_rules + '已确认事实（仅供理解，除“画面文字”外不得写入画面）：' + _text(
+        return identity_rules + ('用户确认随商品发货的内容：' + '；'.join(included) + '。' if included else '') + '已确认事实（仅供理解，除“画面文字”外不得写入画面）：' + _text(
             {'title': title, 'sellingPoints': points, 'specs': specs}) + '统一风格锚点（仅文字）：' + style
     common = ('竖版2:3详情长图的一个分段，主体清楚，手机缩略图可读，四周保留约8%安全边距，各分段共享配色/光线/材质但'
               '版式各不相同，不要重复首屏标题卡。画面文字必须逐字绘制下面“画面文字”，不得增加任何其它文字、数字、价格、促销、'

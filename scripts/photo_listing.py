@@ -11,12 +11,18 @@ import win_no_window  # noqa: F401
 import jdo_listing_mvp as cli
 import jd_product_pipeline as pipeline
 import detail_pages as dp
+import sale_attr_templates as sat
 from jd_product_mover import HttpClient,MoverError,parse_mobile_page,parse_detail_urls
 from photo_contract import (SCHEMA_VERSION,ReconcileRequired,check_store,initial_manifest,join_detail_panels,media_entries,missing_information,package_path,review_digest,walk_components)
 from photo_generation import atomic_json,generate_tasks,load,sha
 from skill_paths import installed_skill_dir
 
 IDENTITY_RULES='只使用用户实拍图中的真实商品，外形、比例、颜色、结构、配件与原图一致。禁止补画看不清或被遮挡的部件；不得复制参考链接的任何商品图，禁止别家品牌、店名、水印、二维码。仅使用下面已确认事实；不添加未经核实的材质、尺寸、承重、认证、功效或价格承诺。'
+DEFAULT_PHOTO_RULES=('【默认生成限制】只画实拍商品本体；不得添加毛巾、纸巾、洗漱用品、植物、人物、宠物、瓶罐、袜子饰品等非售卖物，除非用户已确认它们属于赠品或包装内；'
+ '不写未确认宣传语（如强力、牢固、不易掉落、一秒上墙、轻松安装、不伤墙、便捷），不写承重、材质、认证、功效、尺寸、价格和促销；不出现“商品名称”等占位字样、斜杠、包装盒；'
+ '规格、层数、颜色必须与对应SKU一致：画面结构（如1层只有一个篮、2层才有下方托盘）、规格文字逐字与确认事实相同；不确定的部分留白，不编造。')
+IDENTITY_RULES=IDENTITY_RULES+DEFAULT_PHOTO_RULES
+ON_SALE_STATUSES=(1,103)  # 103 is the live POP on-sale value (1.2.1 only accepted a fixture value 1)
 DEFAULT_STYLE='专业干净的京东电商风格，柔和光线，统一配色，主体清楚，中文排版准确。'
 
 def ensure_shop(shop):
@@ -101,8 +107,9 @@ def build_generation_plan(m,root,reference,preview=False,only=None):
  style=(m.get('reference') or {}).get('styleSummary') or DEFAULT_STYLE
  verified={'title':facts.get('title') or m['title'],'sellingPoints':facts.get('sellingPoints') or []}
  if not preview and only!='detail':verified.update({k:facts[k] for k in ('brandId','categoryId')});verified['specifications']=[{'spec':s['spec']} for s in facts['skus']]
- common=IDENTITY_RULES+'已确认事实：'+json.dumps(verified,ensure_ascii=False)+'风格学习摘要（仅文字）：'+style
- descriptions=[('main-01','main','纯白背景产品独立首图，主体完整，移除手和非售卖的使用配景，不加文字或标签。'),
+ included=[str(x) for x in (facts.get('includedItems') or []) if str(x).strip()]
+ common=IDENTITY_RULES+('用户确认随商品发货的内容：'+'；'.join(included)+'（仅这些可入画，且必须与实拍一致）。' if included else '')+'已确认事实：'+json.dumps(verified,ensure_ascii=False)+'风格学习摘要（仅文字）：'+style
+ descriptions=[('main-01','main','纯白背景(#FFFFFF)产品独立首图：不要任何场景、墙面、浴室、台面、绿植、洗护品、箭头、放大圆圈，主体完整居中四周留白，移除手和非售卖的使用配景，不加文字或标签。'),
  ('main-02','main','简洁生活场景图；真实商品主体占主要画面，只写已确认商品名称，不编参数。'),
  ('main-03','main','突出已确认收纳用途，统一高级电商版式，中文逐字准确。')]
  if not preview:descriptions += [('main-04','main','以实拍角度展示可见结构细节，不扩展看不清的背面或配件。'),('main-05','main','已确认卖点信息图；仅用事实里的短句，不添加承重、功效、材质数据。')]
@@ -151,6 +158,36 @@ def materialize_generated(root,plan,result):
  if not detail_only:m['status']='MATERIAL_PREVIEW' if any(t.get('previewOnly') for t in plan) else ('MATERIAL_REVIEW_PENDING' if complete else 'MATERIAL_INCOMPLETE')
  atomic_json(root/'manifest.json',m);return m
 
+def _fetch_official_sale_templates(category_id):
+ return cli.get('jdo-product-publish','/rest/sp-product/v0/categories/{categoryId}/sale-attr-templates',{'categoryId':category_id}).get('data')
+
+def _fetch_same_shop_samples(category_id,limit=6):
+ rows=[r for r in pipeline.list_products(category_id=int(category_id)) if int(r.get('productStatus') or 0) in sat.ON_SALE][:limit]
+ out=[]
+ for r in rows:
+  body=cli.get('jdo-product-update','/rest/sp-product/v0/product-apply/{applyId}',{'applyId':str(r['productId']),'scene':'pop'}).get('data') or {}
+  body['liveProductStatus']=int(r.get('productStatus') or 0);out.append(body)
+ return out
+
+def discover_sale_templates(root,reference):
+ """Official interface first; else same-shop same-category on-sale products; else stop and ask once."""
+ root=Path(root);m=read_manifest(root);verify_store(m['store']);category=int((m.get('facts') or {}).get('categoryId') or (reference.get('category') or {}).get('id') or 0)
+ components=[c for c in walk_components(reference.get('schema') or {}) if c['componentCode'].startswith('sale-prop-')]
+ result=sat.resolve(components,category,fetch_official=_fetch_official_sale_templates,fetch_samples=_fetch_same_shop_samples)
+ result['category']=category;atomic_json(root/'sale-attr-templates.json',result)
+ m['saleAttributeTemplates']={a:t['source'] for a,t in result['templates'].items()};atomic_json(root/'manifest.json',m);return result
+
+def apply_sale_templates(root):
+ """Build templateSkuProps from the user's own per-SKU values (facts.skus[].templateValues); nothing is invented."""
+ root=Path(root);m=read_manifest(root);data=load(root/'sale-attr-templates.json',{}) or {};templates=data.get('templates') or {}
+ if not templates:raise ValueError('No structured sale-attribute template recorded; run discover-sale-templates first')
+ template=next(iter(templates.values()));aliases={}
+ for sku in m['facts'].get('skus') or []:
+  values=sku.get('templateValues')
+  if not values:raise ValueError('SKU '+str(sku.get('key'))+' needs templateValues for the structured sale attribute (one value per input box)')
+  props,alias=sat.build_props(template,values);sku['styleTemplateSkuProps']=props;sku['spec']=alias;sku.setdefault('attributes',{})[(m['facts'].get('saleDimensions') or ['规格'])[0]]=alias;aliases[sku['key']]=alias
+ m.pop('review',None);m.pop('imageReview',None);atomic_json(root/'manifest.json',m);return {'aliases':aliases,'source':{a:t['source'] for a,t in templates.items()}}
+
 def build_listing(m,root,reference):
  root=Path(root);f=m.get('facts') or {};missing=missing_information(f,reference)
  if missing:raise ValueError('Missing verified facts: '+','.join(missing))
@@ -162,6 +199,10 @@ def build_listing(m,root,reference):
  if len(dimensions)>2 or len(fields)<len(dimensions):raise ValueError('Target live template cannot represent the provided sale dimensions; do not truncate SKUs')
  definitions={'style':{'componentCode':fields[0]['componentCode'],'attrName':dimensions[0]}}
  if len(dimensions)==2:definitions['size']={'componentCode':fields[1]['componentCode'],'attrName':dimensions[1]}
+ structured=[c for c in fields if (c.get('extra') or {}).get('isStructure')][:len(dimensions)]
+ for c,slot in zip(structured,('styleTemplateSkuProps','sizeTemplateSkuProps')):
+  absent=[s['key'] for s in f['skus'] if not s.get(slot)]
+  if absent:raise ValueError('销售属性「'+str(c.get('componentTitle') or c['componentCode'])+'」是结构化属性，SKU '+','.join(absent)+' 缺少 templateSkuProps；平台预校验通过不代表别名格式正确，真实提交才会报 1010300506。请先运行 discover-sale-templates / apply-sale-templates，或向用户索取该属性的填写框')
  key=m.get('packageId') or hashlib.sha256(json.dumps(m['store'],sort_keys=True).encode()).hexdigest()[:16]
  product={'productKey':'PN-'+key[:16],'title':f['title'],'brandId':f['brandId'],'itemNumber':'PN-'+key[:24],
           'sevenDayReturnCode':f['sevenDayReturnCode'],'freightTemplateId':f['freightTemplateId'],
@@ -177,7 +218,7 @@ def build_listing(m,root,reference):
   mapped=lambda field,value:hashlib.sha256((key+'|'+field+'|'+value).encode()).hexdigest()[:32]
   skus.append({'skuKey':s['key'],'jdPrice':str(s['jdPrice']),'stock':int(s['stock']),'enabled':True,'vendorSku':s.get('vendorSku') or f'PN-{key[:12]}-{i:03d}',
                'styleAlias':style,'sizeAlias':size,'styleMappingId':mapped('style',style),'sizeMappingId':mapped('size',size),
-               'styleOrder':styles.index(style)+1,'sizeOrder':sizes.index(size)+1,'skuAttributes':deepcopy(s['skuAttributes'])})
+               'styleOrder':styles.index(style)+1,'sizeOrder':sizes.index(size)+1,'skuAttributes':deepcopy(s['skuAttributes']),**({'styleTemplateSkuProps':deepcopy(s['styleTemplateSkuProps'])} if s.get('styleTemplateSkuProps') else {}),**({'sizeTemplateSkuProps':deepcopy(s['sizeTemplateSkuProps'])} if s.get('sizeTemplateSkuProps') else {})})
   if s['key'] not in sku_images:raise ValueError('Missing generated SKU image')
   item=sku_images[s['key']];local=item['localPath'] if isinstance(item,dict) else item
   images.insert(len(m['mainImages'])+i-1,{'imageKey':f'SKU-{i:02d}','skuKey':s['key'],'role':'sku_main','localPath':local,'order':1,'mediaCategoryId':reference['media']['defaultCategoryId']})
@@ -275,7 +316,7 @@ def publish_package(root,*,confirm,digest):
  root=Path(root);m=check_review(root,digest);runtime=root/'.publish';prepared=load(runtime/'prepared.json')
  if not prepared or prepared.get('reviewDigest')!=digest or sha(runtime/'publish-body.json')!=prepared['bodySha256'] or sha(root/'listing.json')!=prepared['listingSha256']:raise ValueError('Prepared payload no longer matches reviewed materials')
  state_path=root/'state.json';state=load(state_path,{}) or {}
- if m.get('productId') or state.get('status') in ('SUBMITTING','UNKNOWN','SUCCEEDED'):return reconcile_package(root)
+ if m.get('productId') or state.get('status') in ('SUBMITTING','UNKNOWN','SUCCEEDED','REJECTED'):return reconcile_package(root)
  verify_store(m['store']);existing=pipeline.find_existing_product(prepared['itemNumber'])
  if existing:
   atomic_json(state_path,{'status':'SUBMITTING','itemNumber':prepared['itemNumber'],'productId':int(existing['productId'])});return reconcile_package(root)
@@ -285,10 +326,17 @@ def publish_package(root,*,confirm,digest):
  began=time.monotonic()
  try:
   latest=load(state_path,{}) or {}
-  if latest.get('status') in ('SUBMITTING','UNKNOWN','SUCCEEDED') or read_manifest(root).get('productId'):return reconcile_package(root)
+  if latest.get('status') in ('SUBMITTING','UNKNOWN','SUCCEEDED','REJECTED') or read_manifest(root).get('productId'):return reconcile_package(root)
   check_review(root,digest)
   atomic_json(state_path,{'status':'SUBMITTING','itemNumber':prepared['itemNumber'],'bodySha256':prepared['bodySha256']})
   try:response=cli.run_jdo_large(url='/rest/sp-product/v0/product-applies',method='POST',body_path=runtime/'publish-body.json',skill_id='jdo-product-publish',yes=True)
+  except cli.JdoError as e:
+   code=re.match(r'\s*(\d{6,})',str(e))
+   if code:  # the platform answered with an error code: an explicit refusal, not a lost response
+    reason=str(e)[:600];record={'status':'REJECTED','itemNumber':prepared['itemNumber'],'bodySha256':prepared['bodySha256'],'reason':reason,'at':time.strftime('%Y-%m-%dT%H:%M:%S')}
+    atomic_json(state_path,record);atomic_json(runtime/'rejection.json',record)
+    raise ReconcileRequired('Platform explicitly rejected the submission ('+reason[:200]+'); fix the cause, then run confirm-not-created (read-only remote check) before any new submission') from None
+   atomic_json(state_path,{'status':'UNKNOWN','itemNumber':prepared['itemNumber'],'bodySha256':prepared['bodySha256']});raise ReconcileRequired('Product submission outcome unknown; query by technical item number') from None
   except Exception:
    atomic_json(state_path,{'status':'UNKNOWN','itemNumber':prepared['itemNumber'],'bodySha256':prepared['bodySha256']});raise ReconcileRequired('Product submission outcome unknown; query by technical item number') from None
   atomic_json(runtime/'publish-response.json',response);data=response.get('data') or {}
@@ -296,6 +344,22 @@ def publish_package(root,*,confirm,digest):
   m['productId']=int(data['productId']);m['applyId']=str(data.get('applyId') or data['productId']);m['status']='PUBLISHED_UNVERIFIED';m['timings']['publishSeconds']=round(time.monotonic()-began,2)
   atomic_json(root/'manifest.json',m);atomic_json(state_path,{'status':'SUCCEEDED','itemNumber':prepared['itemNumber'],'productId':m['productId'],'bodySha256':prepared['bodySha256']});return verify_package(root)
  finally:lock_path.unlink(missing_ok=True)
+
+def confirm_not_created(root,*,reason):
+ """Read-only proof that nothing was created, required before re-submitting after REJECTED/UNKNOWN."""
+ root=Path(root);m=read_manifest(root);state_path=root/'state.json';state=load(state_path,{}) or {}
+ if state.get('status') not in ('UNKNOWN','REJECTED'):raise ValueError('Only an UNKNOWN or REJECTED submission needs this check')
+ if not str(reason or '').strip():raise ValueError('Write why the previous submission failed (platform text or cause)')
+ verify_store(m['store']);prepared=load(root/'.publish/prepared.json',{}) or {}
+ item=state.get('itemNumber') or prepared.get('itemNumber') or ''
+ by_item=[existing for existing in [pipeline.find_existing_product(item)] if existing] if item else []
+ title=(m.get('facts') or {}).get('title') or m['title']
+ same_title=[] if by_item else [r for r in pipeline.list_products() if r.get('productName')==title]  # an itemNumber hit already settles it
+ matches=[{'productId':r['productId'],'itemNum':r.get('itemNum'),'by':'itemNumber'} for r in by_item]+[{'productId':r['productId'],'itemNum':r.get('itemNum'),'by':'title'} for r in same_title if r['productId'] not in {x['productId'] for x in by_item}]
+ evidence={'checkedAt':time.strftime('%Y-%m-%dT%H:%M:%S'),'itemNumber':item,'title':title,'matches':matches,'previousStatus':state.get('status'),'previousReason':state.get('reason'),'userReason':str(reason)[:400]}
+ atomic_json(root/'.publish'/'no-product-evidence.json',evidence)
+ if matches:raise ReconcileRequired('A matching remote product exists ('+str(matches[0]['productId'])+'); adopt it with reconcile instead of re-submitting')
+ atomic_json(state_path,{'status':'REJECTED_CONFIRMED','itemNumber':item,'confirmedAt':evidence['checkedAt'],'reason':evidence['userReason']});return evidence
 
 def reconcile_package(root):
  root=Path(root);m=read_manifest(root);verify_store(m['store']);state=load(root/'state.json',{}) or {};prepared=load(root/'.publish/prepared.json',{}) or {}
@@ -327,7 +391,7 @@ def verify_package(root,attempts=18,interval=10):
  from image_patch_update import group_urls
  groups=group_urls(apply)
  if (detail.get('productInfo') or {}).get('productName')!=listing['product']['title']:problems.append('title mismatch')
- if int(((detail.get('productInfo') or {}).get('productStatus') or {}).get('productStatusNew') or 0)!=1:problems.append('product not on sale')
+ if int(((detail.get('productInfo') or {}).get('productStatus') or {}).get('productStatusNew') or 0) not in ON_SALE_STATUSES:problems.append('product not on sale')
  expected_main=[i['upload']['imgUrl'] for i in listing['images'] if i['role']=='spu_main']
  if groups.get('0000000000')!=expected_main:problems.append('SPU main image order mismatch')
  stocks={str(s.get('skuId')):s for s in cli.query_sku_stocks([int(s['skuId']) for s in detail['skuList']])}
@@ -368,9 +432,10 @@ def main(argv=None):
  parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
  init=sub.add_parser('init');init.add_argument('--package',required=True,type=Path);init.add_argument('--shop',required=True);init.add_argument('--photos',nargs='+',required=True,type=Path);init.add_argument('--title',required=True)
  choice=init.add_mutually_exclusive_group(required=True);choice.add_argument('--reference');choice.add_argument('--no-reference',action='store_true')
- for name in ('refresh','reference','set-facts','questions','make-plan','generate','review','accept-images','prepare','publish','verify','reconcile'):
+ for name in ('refresh','reference','set-facts','questions','make-plan','generate','review','accept-images','prepare','publish','verify','reconcile','confirm-not-created','discover-sale-templates','apply-sale-templates'):
   p=sub.add_parser(name);p.add_argument('--package',required=True,type=Path)
   if name=='refresh':p.add_argument('--category-id',type=int,required=True);p.add_argument('--category-name',default='');p.add_argument('--brand-category-id',type=int)
+  if name=='confirm-not-created':p.add_argument('--reason',required=True)
   if name=='set-facts':p.add_argument('--facts',required=True,type=Path);p.add_argument('--style',type=Path)
   if name=='make-plan':p.add_argument('--preview',action='store_true');p.add_argument('--only',choices=['detail'],help='只重做详情模块（已有主图/SKU图不变）')
   if name=='generate':p.add_argument('--redo',nargs='*',default=[])
@@ -397,7 +462,8 @@ def main(argv=None):
    atomic_json(root/'manifest.json',m);result={'missing':missing_information(f,load(root/'reference.json',{}))}
   elif command=='questions':
    m=read_manifest(root);reference=load(root/'reference.json',{});missing=missing_information(m.get('facts') or {},reference)
-   question={'askTogetherOnce':True,'missingFields':missing,'rule':'参数必须由用户提供或明确确认；看不清的结构要求补拍，不按参考商品猜参数'}
+   structured=load(root/'sale-attr-templates.json',{}) or {};missing=missing+(['sale-attribute-template:'+m_['attrName'] for m_ in structured.get('missing') or []])
+   question={'askTogetherOnce':True,'missingFields':missing,**({'saleAttributeQuestion':structured['ask']} if structured.get('ask') else {}),'rule':'参数必须由用户提供或明确确认；看不清的结构要求补拍，不按参考商品猜参数'}
    atomic_json(root/'missing-information.json',question);result=question
   elif command=='make-plan':
    r=make_plan(root,preview=args.preview,only=args.only);result={'tasks':len(r['tasks']),'previewOnly':args.preview,'detailModules':r['detailModules']}
@@ -407,6 +473,9 @@ def main(argv=None):
   elif command=='accept-images':result=accept_images(root,args.review_digest,confirm=args.confirm)
   elif command=='prepare':result=prepare_package(root,load(root/'reference.json'),confirm=args.confirm,digest=args.review_digest)
   elif command=='publish':result=publish_package(root,confirm=args.confirm,digest=args.review_digest)
+  elif command=='discover-sale-templates':result=discover_sale_templates(root,load(root/'reference.json',{}))
+  elif command=='apply-sale-templates':result=apply_sale_templates(root)
+  elif command=='confirm-not-created':result=confirm_not_created(root,reason=args.reason)
   elif command=='verify':result=verify_package(root)
   else:result=reconcile_package(root)
   if (root/'manifest.json').is_file():

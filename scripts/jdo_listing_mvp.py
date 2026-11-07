@@ -860,6 +860,10 @@ def sale_attribute_components(
         style_value = sku["styleAlias"]
     if style_value:
         style_properties.insert(0, property_item("saleAttrValues", f"[{style_value}]"))
+    if sku.get("styleTemplateSkuProps"):
+        # structured sale attribute: the platform validates the alias against these template inputs
+        style_properties.append(property_item(
+            "templateSkuProps", json.dumps(sku["styleTemplateSkuProps"], ensure_ascii=False, separators=(",", ":"))))
     components = [{
         "componentCode": style_definition["componentCode"],
         "properties": style_properties,
@@ -878,6 +882,9 @@ def sale_attribute_components(
             size_value = sku["sizeAlias"]
         if size_value:
             size_properties.insert(0, property_item("saleAttrValues", f"[{size_value}]"))
+        if sku.get("sizeTemplateSkuProps"):
+            size_properties.append(property_item(
+                "templateSkuProps", json.dumps(sku["sizeTemplateSkuProps"], ensure_ascii=False, separators=(",", ":"))))
         components.append({
             "componentCode": size_definition["componentCode"],
             "properties": size_properties,
