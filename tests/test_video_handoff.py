@@ -105,6 +105,9 @@ class VoiceReviewTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.root = Path(self.tmp.name); self.file = make_package(self.root)
     def info(self):
         with ok_handoff(), patch.object(vh, 'find_video_skill', return_value=Path('S')): return vh.check_handoff(self.file)
+    def record(self, phrase):
+        # never depend on a locally installed 11190: the handoff subprocess and the skill lookup are always faked here
+        with ok_handoff(), patch.object(vh, 'find_video_skill', return_value=Path('S')): return vh.record_voice_review(self.file, phrase)
     def test_unconfirmed_listening_blocks_binding_and_prompt_has_the_facts(self):
         info = self.info(); self.assertFalse(info['voiceConfirmed'])
         with self.assertRaises(vh.HandoffError) as c: vh.require_voice_review(info)
@@ -112,16 +115,16 @@ class VoiceReviewTests(unittest.TestCase):
         for word in ('试听', '主图视频_AI带货_run1.mp4', 'ai', '18', '口播', ACCEPT, '接受口播风险，确认绑定'): self.assertIn(word, text)
     def test_exact_acceptance_phrases_record_raw_time_and_sha(self):
         for phrase in (ACCEPT, '接受口播风险，确认绑定'):
-            self.setUp(); info = self.info(); rec = vh.record_voice_review(self.file, phrase)
+            self.setUp(); info = self.info(); rec = self.record(phrase)
             self.assertEqual(phrase, rec['confirmationRaw']); self.assertEqual(info['sha256'], rec['videoSha256']); self.assertTrue(rec['at'])
             self.assertEqual(rec, json.loads(self.file.read_text(encoding='utf-8'))['video']['voiceReview'])
             self.assertTrue(self.info()['voiceConfirmed']); vh.require_voice_review(self.info())
     def test_vague_or_generic_replies_are_not_confirmation(self):
         for phrase in ('', '确认', '好的', '可以', '已试听', '确认绑定', 'ok'):
-            with self.assertRaises(vh.HandoffError, msg=phrase): vh.record_voice_review(self.file, phrase)
+            with self.assertRaises(vh.HandoffError, msg=phrase): self.record(phrase)
         self.assertNotIn('voiceReview', json.loads(self.file.read_text(encoding='utf-8'))['video'])
     def test_changed_video_sha_invalidates_the_confirmation(self):
-        vh.record_voice_review(self.file, ACCEPT)
+        self.record(ACCEPT)
         m = json.loads(self.file.read_text(encoding='utf-8')); new = self.root / '视频' / 'run2.mp4'; new.write_bytes(b'new-video'); m['video'].update(localPath='视频/run2.mp4', sha256=digest(new)); atomic_json(self.file, m)
         info = self.info(); self.assertFalse(info['voiceConfirmed'])
         with self.assertRaises(vh.HandoffError): vh.require_voice_review(info)
