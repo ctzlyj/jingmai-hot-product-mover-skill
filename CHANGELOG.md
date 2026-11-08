@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.5 (2026-11-08)
+- 仅测试修复：`test_video_handoff` 的试听确认用例不再依赖本机是否装有 11190（1.2.4 包内在未安装 11190 的机器上有 2 个用例失败）。功能与 1.2.4 相同。
+
 ## 1.2.4 (2026-11-08)
 接入主图视频 11190@1.1.2 的安全交接检查。
 - `photo_video.py` 绑定前强制：只读 `manifest.video.localPath`（不扫目录），`--mp4` 必须等于它；调用 11190 `pop_video.py verify-handoff`（非 0 即停）；再独立核 `bindable`/`mode`/`label`/`taskId`/`qc` 与视频、封面 SHA256。检查通过之前不探测文件、不核店、不访问平台。

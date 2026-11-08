@@ -23,7 +23,7 @@ class PhotoModeGuidanceTests(unittest.TestCase):
 class DetailPageGuidanceTests(unittest.TestCase):
     def test_skill_and_references_state_the_detail_gate_without_asking_the_user(self):
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
-        self.assertIn('version: 1.2.4', skill)
+        self.assertIn('version: 1.2.5', skill)
         for word in ('detail-plan.json', '6–8', '覆盖全部 SKU', 'deliveryChecks', 'detail_repair.py', '不需要提醒'):
             self.assertIn(word, skill)
         doc = (ROOT / 'references' / 'detail-pages.md').read_text(encoding='utf-8')
@@ -49,7 +49,7 @@ class StructuredAttributeGuidanceTests(unittest.TestCase):
         for word in ('平台预校验通过不代表属性正确', 'sale-attr-templates', '同店、同末级类目', 'templateSkuProps', 'confirm-not-created', 'REJECTED_CONFIRMED', '103'):
             self.assertIn(word, doc)
         log = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
-        self.assertTrue(log.startswith('# Changelog\n\n## 1.2.4')); self.assertIn('## 1.2.3', log)
+        self.assertTrue(log.startswith('# Changelog\n\n## 1.2.5')); self.assertIn('## 1.2.4', log); self.assertIn('## 1.2.3', log)
 
 
 class VideoHandoffGuidanceTests(unittest.TestCase):
