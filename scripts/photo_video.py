@@ -6,6 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 import win_no_window  # noqa: F401
 import requests
 import jdo_listing_mvp as cli
+import video_handoff as handoff
 import jd_product_pipeline as pipeline
 from photo_contract import ReconcileRequired,SCHEMA_VERSION,check_store,package_path
 from photo_generation import atomic_json,load,sha
@@ -34,8 +35,15 @@ def bind_video(manifest_path,mp4=None,*,confirm,attempts=12,interval=15,resume_v
  if not m or m.get('schemaVersion')!=SCHEMA_VERSION or m.get('status')!='VERIFIED':raise ValueError('Use a verified listing-package, not guessed SKU IDs')
  check_store(m['store']);pid=int(m['productId']);ids=sorted(set(map(int,m['skuIds'])))
  if not ids:raise ValueError('Missing SKU IDs')
- source=Path(mp4).resolve() if mp4 else package_path(root,(m.get('video') or {})['localPath'])
- info=probe_video(source);source_sha=sha(source);verify_store(m['store'])
+ # Gate: the video is the one the manifest names, verified by 11190 verify-handoff, and (if required) listened to by the user.
+ # Nothing below (probe, store check, platform reads/writes) runs unless this passes.
+ verified=handoff.check_handoff(manifest_path,mp4=mp4);handoff.require_voice_review(verified)
+ source=Path(verified['path']);source_sha=verified['sha256']
+ def still_same(stage):
+  # the bytes uploaded/bound must be the bytes that were verified and listened to
+  if not source.is_file() or sha(source)!=source_sha:raise handoff.HandoffError('Video file changed ('+stage+'); stop, never upload or bind a different file than the verified one')
+ still_same('before probing')
+ info=probe_video(source);still_same('after probing');verify_store(m['store'])
  owned=sorted(int(s['skuId']) for s in read_product(pid).get('skuList') or [])
  if owned!=ids:raise ValueError('Manifest SKU IDs do not match the owned product')
  directory=root/'.video-binding';directory.mkdir(exist_ok=True);state_path=directory/'state.json';state=load(state_path,{}) or {}
@@ -61,7 +69,7 @@ def bind_video(manifest_path,mp4=None,*,confirm,attempts=12,interval=15,resume_v
    known_id=int(resume_video_id);save('VIDEO_SAVED',videoId=known_id)
   if not known_id:
    if not state.get('jdVideoId'):
-    save('URL_UNKNOWN')
+    still_same('before upload address');save('URL_UNKNOWN')
     response=cli.get('jdo-product-material','/rest/sp-product/v0/media-zones/{zoneId}/upload-urls',{'zoneId':zone,**pipeline.video_upload_url_params(source,source.stat().st_size)})
     upload=response.get('data') or {};url=upload.get('httpsUploadUrl') or upload.get('uploadUrl');jd_id=int(upload.get('jdVideoId') or 0)
     if not url or not jd_id:raise ReconcileRequired('Upload address response incomplete')
@@ -72,9 +80,11 @@ def bind_video(manifest_path,mp4=None,*,confirm,attempts=12,interval=15,resume_v
      if not 200<=transfer.status_code<300:raise ValueError('Transfer not confirmed')
     except Exception:
      save('TRANSFER_UNKNOWN');raise ReconcileRequired('Video transfer result unknown; do not retry transfer') from None
+    try:still_same('after transfer')
+    except handoff.HandoffError:save('TRANSFER_UNKNOWN',changedDuringTransfer=True);raise
     save('TRANSFERRED')
    if state['stage']!='TRANSFERRED':raise ReconcileRequired('Video upload not confirmed')
-   body=directory/'save-video-body.json';atomic_json(body,{'zoneVideoDTO':{'videoName':str(m['title'])[:18],'videoType':pipeline.VIDEO_TYPE,'videoDesc':'商品主图展示','videoSize':source.stat().st_size,'jdVideoId':state['jdVideoId']}})
+   still_same('before save');body=directory/'save-video-body.json';atomic_json(body,{'zoneVideoDTO':{'videoName':str(m['title'])[:18],'videoType':pipeline.VIDEO_TYPE,'videoDesc':'商品主图展示','videoSize':source.stat().st_size,'jdVideoId':state['jdVideoId']}})
    save('SAVE_SUBMITTING')
    try:response=cli.run_jdo_large(url='/rest/sp-product/v0/media-zones/{zoneId}/videos',method='POST',body_path=body,params={'zoneId':zone},skill_id='jdo-product-material',yes=True)
    except Exception:
@@ -93,7 +103,7 @@ def bind_video(manifest_path,mp4=None,*,confirm,attempts=12,interval=15,resume_v
   tags=cli.get('jdo-product-material','/rest/sp-product/v0/sku-material-tags',{'materialType':pipeline.VIDEO_MATERIAL_TYPE,'secondCategoryId':tag_category}).get('data') or []
   tag=next((t for t in tags if t.get('tagName')=='产品展示'),None)
   if not tag:raise ValueError('Current category has no product-display video tag')
-  bindings=state.setdefault('bindings',{});materials=pipeline.existing_video_materials(ids)
+  still_same('before binding');bindings=state.setdefault('bindings',{});materials=pipeline.existing_video_materials(ids)
   for sid in ids:
    existing={int((r.get('videoMaterial') or {}).get('videoId') or 0) for r in materials.get(sid) or []}-{0}
    if existing=={known_id}:continue
@@ -112,18 +122,24 @@ def bind_video(manifest_path,mp4=None,*,confirm,attempts=12,interval=15,resume_v
    if audit['allApproved'] or audit['rejectedSkuIds']:break
    if n+1<attempts:time.sleep(interval)
   stage='VIDEO_VERIFIED' if audit.get('allApproved') else 'VIDEO_REJECTED' if audit.get('rejectedSkuIds') else 'VIDEO_REVIEW_PENDING';save(stage,audit=audit)
-  if root in source.parents:local=str(source.relative_to(root))
-  else:
-   target=root/'视频'/f'main-video-{source_sha[:16]}.mp4';target.parent.mkdir(exist_ok=True)
-   if not target.exists():shutil.copy2(source,target)
-   local=str(target.relative_to(root))
-  m=load(manifest_path);meta=m.setdefault('video',{});meta.update({'localPath':local,**info,'binding':{'videoId':known_id,'jdVideoId':state['jdVideoId'],'stage':stage,'audit':audit,'sourceSha256':source_sha}});m.setdefault('timings',{})['videoBindingSeconds']=round(time.monotonic()-began,2);atomic_json(manifest_path,m)
+  local=str(source.relative_to(root));m=load(manifest_path);meta=m.setdefault('video',{});meta.update({'localPath':local,**info,'binding':{'videoId':known_id,'jdVideoId':state['jdVideoId'],'stage':stage,'audit':audit,'sourceSha256':source_sha}});m.setdefault('timings',{})['videoBindingSeconds']=round(time.monotonic()-began,2);atomic_json(manifest_path,m)
   return {'stage':stage,'videoId':known_id,'audit':audit,'seconds':round(time.monotonic()-began,2)}
  finally:lock.unlink(missing_ok=True)
 
 def main(argv=None):
- parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--manifest',type=Path,required=True);parser.add_argument('--mp4',type=Path);parser.add_argument('--confirm',required=True);parser.add_argument('--resume-video-id',type=int)
+ parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--manifest',type=Path,required=True);parser.add_argument('--mp4',type=Path,help='只能等于 manifest.video.localPath；默认不需要')
+ parser.add_argument('--confirm',required=True);parser.add_argument('--resume-video-id',type=int)
+ parser.add_argument('--diagnose',action='store_true',help='只读：列出视频交接缺哪些字段，不访问平台、不写文件')
+ parser.add_argument('--voice-confirmation',help='用户原话：已试听，确认绑定 / 接受口播风险，确认绑定')
+ parser.add_argument('--record-only',action='store_true',help='只记录试听确认，不绑定')
  a=parser.parse_args(argv)
+ try:
+  if a.diagnose:print(json.dumps(handoff.diagnose(a.manifest),ensure_ascii=False,indent=2));return 0
+  if a.voice_confirmation:
+   print(json.dumps(handoff.record_voice_review(a.manifest,a.voice_confirmation),ensure_ascii=False,indent=2))
+   if a.record_only:return 0
+ except handoff.HandoffError as e:print(json.dumps({'ok':False,'type':'HandoffError','message':str(e)},ensure_ascii=False));return 3
  try:result=bind_video(a.manifest,a.mp4,confirm=a.confirm,resume_video_id=a.resume_video_id);print(json.dumps(result,ensure_ascii=False,indent=2));return 0 if result['audit'].get('allApproved') else 2
+ except handoff.HandoffError as e:print(json.dumps({'ok':False,'type':'HandoffError','message':str(e)},ensure_ascii=False));return 3
  except (ValueError,ReconcileRequired,cli.JdoError) as e:print(json.dumps({'ok':False,'type':type(e).__name__,'message':str(e)},ensure_ascii=False));return 2
 if __name__=='__main__':raise SystemExit(main())

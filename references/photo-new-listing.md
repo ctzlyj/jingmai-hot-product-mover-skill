@@ -78,8 +78,8 @@ manifest 的 schemaVersion 为 listing-package/v1，顶层含 store/Profile/vend
 ## 本地视频绑定入口
 
 ```text
-scripts/photo_video.py --manifest <PACKAGE/manifest.json> --mp4 <本地.mp4> --confirm BIND_MAIN_VIDEO
-# --mp4 可省略，读取 manifest.video.localPath
+scripts/photo_video.py --manifest <PACKAGE/manifest.json> --confirm BIND_MAIN_VIDEO
+# 默认读取 manifest.video.localPath；--mp4 只能等于它。绑定前先过 11190 verify-handoff + 试听确认，见 video-binding-handoff.md
 # 未知视频保存结果：先只读核对原 jdVideoId，再用匹配的 --resume-video-id 恢复，绝不再上传
 ```
 

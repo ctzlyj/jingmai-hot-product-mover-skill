@@ -23,7 +23,7 @@ class PhotoModeGuidanceTests(unittest.TestCase):
 class DetailPageGuidanceTests(unittest.TestCase):
     def test_skill_and_references_state_the_detail_gate_without_asking_the_user(self):
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
-        self.assertIn('version: 1.2.3', skill)
+        self.assertIn('version: 1.2.4', skill)
         for word in ('detail-plan.json', '6–8', '覆盖全部 SKU', 'deliveryChecks', 'detail_repair.py', '不需要提醒'):
             self.assertIn(word, skill)
         doc = (ROOT / 'references' / 'detail-pages.md').read_text(encoding='utf-8')
@@ -48,7 +48,32 @@ class StructuredAttributeGuidanceTests(unittest.TestCase):
         doc = (ROOT / 'references' / 'structured-sale-attributes.md').read_text(encoding='utf-8')
         for word in ('平台预校验通过不代表属性正确', 'sale-attr-templates', '同店、同末级类目', 'templateSkuProps', 'confirm-not-created', 'REJECTED_CONFIRMED', '103'):
             self.assertIn(word, doc)
-        self.assertTrue((ROOT / 'CHANGELOG.md').read_text(encoding='utf-8').startswith('# Changelog\n\n## 1.2.3'))
+        log = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
+        self.assertTrue(log.startswith('# Changelog\n\n## 1.2.4')); self.assertIn('## 1.2.3', log)
+
+
+class VideoHandoffGuidanceTests(unittest.TestCase):
+    def test_docs_describe_the_gate_listening_phrases_and_legacy_policy(self):
+        doc = (ROOT / 'references' / 'video-binding-handoff.md').read_text(encoding='utf-8')
+        for word in ('verify-handoff', 'manifest.video.localPath', '已试听，确认绑定', '接受口播风险，确认绑定', 'voiceReview', 'sha256', 'runId', '不得手工把当前文件的 SHA 写进 manifest', '--diagnose', '不扫描目录'):
+            self.assertIn(word, doc)
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('verify-handoff', skill); self.assertIn('video-binding-handoff.md', skill)
+        self.assertNotIn('--mp4 <本地.mp4> --confirm', (ROOT / 'references' / 'photo-new-listing.md').read_text(encoding='utf-8'))
+
+    def test_the_gate_runs_before_any_platform_access_in_bind_video(self):
+        text = (ROOT / 'scripts' / 'photo_video.py').read_text(encoding='utf-8')
+        gate = text.index('handoff.check_handoff'); self.assertLess(gate, text.index('verify_store(m[')); self.assertLess(gate, text.index('probe_video(source)'))
+
+    def test_handoff_module_has_no_media_or_platform_writers(self):
+        import ast
+        tree = ast.parse((ROOT / 'scripts' / 'video_handoff.py').read_text(encoding='utf-8'))
+        imported = {a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names} | {n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+        for forbidden in ('requests', 'jdo_listing_mvp', 'jd_product_pipeline', 'photo_listing', 'photo_video'):
+            self.assertNotIn(forbidden, imported)
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        for forbidden in ('run_jdo_large', 'upload', 'post'):
+            self.assertNotIn(forbidden, names)
 
 
 if __name__ == '__main__':
