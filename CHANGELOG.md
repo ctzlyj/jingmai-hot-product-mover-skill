@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.6 (2026-11-11)
+大请求桥去掉对 CLI 版本/运行时指纹的整体拒绝，小请求不再依赖系统 Python（P0-1）。
+- 小请求（命令行放得下）直接走官方 CLI，不需要系统 Python 3.12，也不提取 CLI 内部运行时；只有超过命令行上限的大请求才走桥。
+- 桥不再按 sha256/CLI 0.3.4 拒绝：遇到没见过的运行时，子进程探测 `cmd_invoke` 与所需字段，通过即放行，按指纹缓存；不通过才提示“CLI 改变了大请求的发送方式”。已在 CLI 0.3.4 与 0.3.7 上验证。
+- 自检：大请求桥不可用不再让 `environmentReady=false`；改为 `capabilities.largeRequests` 与 `nextActions`(large-requests)，只用人话说明受影响（发品、整版编辑、属性补全、素材绑定）、不受影响（查询、审计、授权、本地生成）和下一步。
+- 结论与取舍：方案甲（CLI 自带环境/拆分 body）不可行；方案乙（自签名）需读取 AppSecret/Token，未经负责人确认不做。3.12 宿主仍是大请求前提，见 `references/large-requests-and-cli-versions.md`。
+- vendor/jdo-cli 仍是 0.3.4，属于 jingmai-cli-linker 的改动，本仓库不改，建议见上述文档。
+
 ## 1.2.5 (2026-11-08)
 - 仅测试修复：`test_video_handoff` 的试听确认用例不再依赖本机是否装有 11190（1.2.4 包内在未安装 11190 的机器上有 2 个用例失败）。功能与 1.2.4 相同。
 

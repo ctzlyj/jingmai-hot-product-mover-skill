@@ -22,7 +22,7 @@ python -X utf8 scripts/bootstrap.py --json
 
 没有 Python 时，助手按官方安装方式安装 Python 3.12/3.13（例如 winget install Python.Python.3.12），再执行。自检自动建立 .venv、安装 requirements.txt；pip 超时会按已有回退机制尝试镜像，不改用户指定源。
 
-检查项：Python/依赖、官方 jdo-cli 和大请求体所需 Python 3.12/运行时、Chrome/Edge/Node/浏览器路由器、模型 Key **存在性**、安装与产物目录权限。不读取 Key 值、不解密 DPAPI，不验证额度或模型可用性。不读取浏览器 Cookie，不连接用户工作浏览器，不绑定固定 CDP 端口；进程检查/子进程隐藏窗口。浏览器安装存在不等于登录或采集已可用。
+检查项：Python/依赖、官方 jdo-cli（大请求所需的 Python 3.12 只影响发品等大请求，缺少时单独提示，不影响 environmentReady）、Chrome/Edge/Node/浏览器路由器、模型 Key **存在性**、安装与产物目录权限。不读取 Key 值、不解密 DPAPI，不验证额度或模型可用性。不读取浏览器 Cookie，不连接用户工作浏览器，不绑定固定 CDP 端口；进程检查/子进程隐藏窗口。浏览器安装存在不等于登录或采集已可用。
 
 成功后看到 JSON：
 - environmentReady=true：核心安装环境通过；ready 是其兼容字段。
@@ -67,7 +67,7 @@ jd-taobao-hot-sales 暂不推广，缺失时不自动安装它。tests/browser_c
 
 ## 手动诊断（只由助手执行）
 
-- 不同位置的 Python 3.12：设置 JDO_PYTHON312 指向本机真实可执行文件，不写固定个人路径。
+- 不同位置的 Python 3.12（仅大请求需要）：设置 JDO_PYTHON312 指向本机真实可执行文件，不写固定个人路径。
 - 非默认 jdo-cli：设置 JDO_CLI_PATH 指向官方安装文件。
 - 只检查不安装：python -X utf8 scripts/bootstrap.py --json --check（权限仅静态检查；不创建配置/环境）。
 - 核心测试：.venv/Scripts/python.exe -X utf8 -m unittest discover -s tests。

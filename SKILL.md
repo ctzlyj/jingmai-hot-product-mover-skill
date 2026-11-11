@@ -1,6 +1,6 @@
 ---
 name: jd-jingmai-hot-product-mover
-version: 1.2.5
+version: 1.2.6
 description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复、新增来源/类目适配，以及本店在售链接的同款矩阵换主图上架；不用于绕过登录、平台权限、版权授权或营销活动报名。
 ---
 
@@ -23,6 +23,8 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
    详情页由 Skill 自动规划，用户不需要提醒、也不需要写详情提示词：`make-plan` 先产出 `detail-plan.json`（默认 6–8 个竖版模块、宽 790px：首屏价值、核心卖点、**覆盖全部 SKU 的款式/组合选择**、真实场景、结构细节、参数与包装、注意事项与售后），再按模块逐张生图。少于 6 张或缺必需模块、未覆盖全部 SKU、重复/不可读/宽度不对、含参考原图，`accept-images`/`prepare`/`publish` 一律拒绝；只有用户明确“只要一张/少量”或平台限制时，才可在 `facts.detailPolicy` 写明原因后放行，确认清单会显示该原因。
 5. 实时模板预检/平台校验后给完整清单（店铺/类目/标题/品牌/包装物流/逐SKU价库存/图片/**详情页总图数与模块列表+总览图**）；只有用户明确确认当前摘要后发布。提交前原子记录 SUBMITTING，异常只回查，按商品与库存专用接口核对SKU/价格/库存/图片，并同时回读 **PC 与手机端**详情的图数与 URL 顺序，完成后才标 VERIFIED。回复必须用 `deliveryChecks` 四项（platformValidationPassed / productOnSale / detailQualityPassed / videoBound）分别报告；任一失败不得写“上架完成/全部完成”。
 6. 标准交付 `listing-package/`（manifest.json 含 detailPlan/deliveryChecks + 主图/详情图/SKU图）。后续视频/信息分 Skill 只读这个包。已上架但详情不完整时用 `scripts/detail_repair.py`（plan→generate→review→用户确认→apply，只 PATCH WareEditor PC/手机端，不动价格/库存/SKU/主图/视频；结果不明只回查）。绑定主图视频用 `scripts/photo_video.py`：**默认只绑定 manifest.video 指定的视频，绑定前必须先通过 11190 `verify-handoff` 与 SHA/质检/试听检查**（旧版缺 SHA 的视频包不绑定，见 `references/video-binding-handoff.md`）；通过后一次上传、逐SKU绑定、回查审核；已有其他视频即停止，不覆盖。
+
+发品整版 schema 这类大请求受 Windows 命令行长度限制，只有大请求才依赖 Python 3.12，且不再绑定某个京麦 CLI 版本（0.3.4/0.3.7 都可用）；缺少时自检只提示“发品、整版编辑、属性补全、素材绑定暂时不能做，查询、审计、授权、本地生成照常”，见 `references/large-requests-and-cli-versions.md`。
 
 结构化销售属性（如类目 35057 的“尺寸”）必须带 `templateSkuProps`；**平台预校验通过不代表其别名正确，真实提交才会报 1010300506**，所以先 `discover-sale-templates`（官方接口→同店同类目在架商品→停下问用户），缺失时发布前即阻止。发布被平台明确拒绝记 `REJECTED`，`REJECTED`/`UNKNOWN` 须 `confirm-not-created` 只读回查无商品后才可再提交，详见 `references/structured-sale-attributes.md`。在架状态值 `103`（和 `1`）才算在架。
 

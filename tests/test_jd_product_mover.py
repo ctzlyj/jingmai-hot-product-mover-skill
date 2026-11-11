@@ -127,7 +127,8 @@ class ProductMoverTests(unittest.TestCase):
         captured_request = {}
         with tempfile.TemporaryDirectory() as temp_dir:
             body_path = Path(temp_dir) / "body.json"
-            body_path.write_text("{}", encoding="utf-8")
+            # a body over the Windows command-line limit: only these go through the bridge (small ones use the official CLI)
+            body_path.write_text(json.dumps({"k": "x" * 40000}), encoding="utf-8")
             completed = type("Completed", (), {
                 "stdout": '{"success":true}',
                 "stderr": "",
@@ -150,7 +151,12 @@ class ProductMoverTests(unittest.TestCase):
                 "jdo_listing_mvp.JDO_RUNTIME", Path(temp_dir) / "runtime.pyc",
             ), patch(
                 "jdo_listing_mvp.subprocess.run", side_effect=run_bridge,
-            ) as mocked_run:
+            ) as mocked_run, patch(
+                "jdo_bridge_probe.find_bridge_python", return_value=Path(sys.executable),
+            ), patch(
+                "jdo_bridge_probe.probe_runtime", return_value={"ok": True, "sha256": "any"},
+            ):
+                (Path(temp_dir) / "runtime.pyc").write_bytes(b"runtime")
                 run_jdo_large(
                     url="/rest/example",
                     method="POST",

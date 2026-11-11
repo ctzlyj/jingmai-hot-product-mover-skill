@@ -207,6 +207,25 @@ def ensure_jdo_runtime() -> Path:
     return JDO_RUNTIME
 
 
+def _invoke_with_official_cli(
+    *, url: str, method: str, body: str | None, skill_id: str, params: dict[str, Any] | None, yes: bool, profile: str,
+) -> dict[str, Any]:
+    executable = Path(os.environ.get("JDO_CLI_PATH", str(JDO_CLI)))
+    arguments = ["invoke", "--skill-id", skill_id, "--url", url, "--method", method.upper(), "--profile", profile,
+                 "--request-identity", "vender", "--timeout", "180"]
+    if params is not None:
+        arguments += ["--params", json.dumps(params, ensure_ascii=False, separators=(",", ":"))]
+    if body is not None:
+        arguments += ["--body", body]
+    if yes:
+        arguments.append("--yes")
+    environment = os.environ.copy()
+    environment["JDO_ENV"] = "prod"
+    completed = subprocess.run([str(executable), *arguments], cwd=ROOT, env=environment, capture_output=True, check=False)
+    output = "\n".join(part for part in (decode_process_output(completed.stdout), decode_process_output(completed.stderr)) if part)
+    return parse_response(output)
+
+
 def run_jdo_large(
     *, url: str, method: str, body_path: Path, skill_id: str,
     params: dict[str, Any] | None = None, yes: bool = False,
@@ -214,10 +233,21 @@ def run_jdo_large(
     profile = active_jdo_profile()
     if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
         recheck_verified_jdo_store()
-    python312 = next((path for path in PYTHON312_CANDIDATES if path.is_file()), None)
+    import jdo_bridge_probe as probe
+
+    body_text = Path(body_path).read_text(encoding="utf-8") if body_path else None
+    if not probe.needs_bridge(body_text):
+        # Small request: the official CLI takes it on the command line. No system Python, no runtime extraction.
+        return _invoke_with_official_cli(
+            url=url, method=method, body=body_text, skill_id=skill_id, params=params, yes=yes, profile=profile)
+    python312 = probe.find_bridge_python()
     if not python312:
-        raise JdoError("找不到兼容 jdo-cli 的 Python 3.12；请设置 JDO_PYTHON312")
+        raise JdoError(probe.bridge_status(exe=Path(os.environ.get("JDO_CLI_PATH", str(JDO_CLI))), python=None, runtime_ok=None)["userMessage"])
     runtime = ensure_jdo_runtime()
+    verdict = probe.probe_runtime(runtime, runtime.read_bytes(), python=python312, cache=runtime.parent / "bridge-probe.json")
+    if not verdict.get("ok"):
+        raise JdoError(verdict.get("userMessage") or probe.interface_changed_message())
+    JDO_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
     request_path = JDO_RUNTIME.parent / f"request-{uuid.uuid4().hex}.json"
     request_path.write_text(json.dumps({
         "url": url,

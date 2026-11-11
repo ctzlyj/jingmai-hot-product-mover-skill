@@ -23,7 +23,7 @@ class PhotoModeGuidanceTests(unittest.TestCase):
 class DetailPageGuidanceTests(unittest.TestCase):
     def test_skill_and_references_state_the_detail_gate_without_asking_the_user(self):
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
-        self.assertIn('version: 1.2.5', skill)
+        self.assertIn('version: 1.2.6', skill)
         for word in ('detail-plan.json', '6–8', '覆盖全部 SKU', 'deliveryChecks', 'detail_repair.py', '不需要提醒'):
             self.assertIn(word, skill)
         doc = (ROOT / 'references' / 'detail-pages.md').read_text(encoding='utf-8')
@@ -49,7 +49,7 @@ class StructuredAttributeGuidanceTests(unittest.TestCase):
         for word in ('平台预校验通过不代表属性正确', 'sale-attr-templates', '同店、同末级类目', 'templateSkuProps', 'confirm-not-created', 'REJECTED_CONFIRMED', '103'):
             self.assertIn(word, doc)
         log = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
-        self.assertTrue(log.startswith('# Changelog\n\n## 1.2.5')); self.assertIn('## 1.2.4', log); self.assertIn('## 1.2.3', log)
+        self.assertTrue(log.startswith('# Changelog\n\n## 1.2.6')); self.assertIn('## 1.2.5', log); self.assertIn('## 1.2.4', log); self.assertIn('## 1.2.3', log)
 
 
 class VideoHandoffGuidanceTests(unittest.TestCase):
@@ -74,6 +74,23 @@ class VideoHandoffGuidanceTests(unittest.TestCase):
         names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         for forbidden in ('run_jdo_large', 'upload', 'post'):
             self.assertNotIn(forbidden, names)
+
+
+class LargeRequestGuidanceTests(unittest.TestCase):
+    def test_doc_records_the_feasibility_conclusions_and_the_credential_boundary(self):
+        doc = (ROOT / 'references' / 'large-requests-and-cli-versions.md').read_text(encoding='utf-8')
+        for word in ('方案甲', '方案乙', '不可行', '负责人先确认合规', '0.3.4', '0.3.7', '--body-file', 'jingmai-cli-linker', 'environmentReady', '33000'):
+            self.assertIn(word, doc)
+        self.assertIn('large-requests-and-cli-versions.md', (ROOT / 'SKILL.md').read_text(encoding='utf-8'))
+    def test_no_script_pins_a_cli_runtime_hash_or_version(self):
+        for path in sorted((ROOT / 'scripts').glob('*.py')):
+            text = path.read_text(encoding='utf-8', errors='replace')
+            self.assertNotIn('e1871f6a32d54ec4', text, path.name); self.assertNotIn('runtime bridge requires', text, path.name)
+    def test_the_skill_never_reads_credentials_for_signing(self):
+        for name in ('jdo_bridge_probe.py', 'jdo_large_body_bridge.py'):
+            text = (ROOT / 'scripts' / name).read_text(encoding='utf-8')
+            for forbidden in ('CredReadW', 'read_app_secret', 'read_token_bundle', 'calc_sign', 'hmac'):
+                self.assertNotIn(forbidden, text, name)
 
 
 if __name__ == '__main__':

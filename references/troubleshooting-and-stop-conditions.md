@@ -52,9 +52,9 @@ Windows 管道模式下必须同时给 `jdo-cli` 子进程设置 `PYTHONUTF8=1` 
 
 ### 大请求体无法启动 CLI
 
-Windows 命令行长度有限。不要把大型 Schema 或 Base64 直接放入 `--body` 参数；使用 `jdo_large_body_bridge.py` 从 UTF-8 文件读取，并继续复用原版 `jdo-cli` 的凭据与签名逻辑。
+Windows 命令行长度有限（约 32KB）。小请求直接走官方 CLI；超过限制的大 Schema 或 Base64 由 `jdo_large_body_bridge.py` 从 UTF-8 文件读取，复用原版 `jdo-cli` 的凭据与签名逻辑，不再因 CLI 版本或运行时指纹拒绝。详见 `large-requests-and-cli-versions.md`。
 
-停止条件：找不到 Python 3.12、无法读取原版 CLI 运行时或凭据不可用时，不要改成自建签名。
+停止条件：找不到 Python 3.12、CLI 改变了大请求接口或凭据不可用时，只告诉用户哪些操作受影响及下一步，不要改成自建签名（自建签名需负责人先确认合规）。
 
 ### 新品发布后详情暂时查不到
 

@@ -400,7 +400,7 @@ def readiness(report: dict[str, Any]) -> dict[str, bool]:
     jdo = report.get("jdoCli") or {}
     environment = (not report["deps"].get("missing")
                    and report.get("permissions", {}).get("writable", False)
-                   and all(jdo.get(k) for k in ("binary", "python312", "runtime")))
+                   and bool(jdo.get("binary")))  # the large-request bridge only affects publish-size requests, see capability_status
     identity = report.get("verifiedIdentity") or {}
     business = (environment and report.get("store", {}).get("state") == "ok"
                 and bool(identity.get("profile")) and identity.get("profile") != "default"
@@ -420,6 +420,8 @@ def capability_status(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "localDraft": {"available": bool(local), "requires": "本地输入、Python依赖和可写目录；无需生图 Key"},
         "prePublishValidation": {"available": states["businessReady"],
                                  "requires": "京麦 CLI 店铺连接、三要素核验和当前类目 reference；无需生图 Key"},
+        "largeRequests": {"available": bool(((report.get("jdoCli") or {}).get("bridge") or {}).get("available")),
+                          "requires": "发品、整版编辑、属性补全、素材绑定这类大请求：需要 Python 3.12 和当前京麦 CLI；缺少时查询、审计、授权、本地生成仍可用"},
         "companyGeneration": {"available": bool(local and company), "requires": "公司模型 Key（只查存在，不验证余额/模型可用性）"},
         "externalGeneration": {"available": bool(local and external.get("found") and external.get("credential")),
                                "requires": "sufy-image2 与使用者自己的 Key；DPAPI 文件存在不等于有效"},
@@ -446,11 +448,9 @@ def next_actions(report: dict[str, Any]) -> list[dict[str, str]]:
         actions.append(action("agent", "jdo-cli", (
             "安装官方京麦 CLI 到 %USERPROFILE%\\.jdo-cli（解压官方包后执行 bin\\jdo-cli.exe init --skip-network）；"
             "或先装 SkillHub 的 jd-jingmai-batch-image-refresh（内含同版本 jdo-cli），再重跑 bootstrap 自动复制")))
-    if not jdo.get("python312"):
-        actions.append(action("agent", "python312", "winget install Python.Python.3.12，或设置 JDO_PYTHON312 指向 3.12 python.exe"))
-
-    if jdo.get("binary") and not jdo.get("runtime"):
-        actions.append(action("agent", "jdo-runtime", "重跑 bootstrap（不带 --check）提取 jdo-cli 运行时；仍失败则对 3.12 安装 pyinstaller"))
+    bridge = jdo.get("bridge") or {}
+    if jdo.get("binary") and bridge and not bridge.get("available"):
+        actions.append(action("agent", "large-requests", bridge.get("userMessage") or ""))
     profiles = report["profiles"]
     store = report["store"]
     if not profiles:
@@ -521,7 +521,9 @@ def main(argv: list[str] | None = None) -> int:
     exe, origin = find_jdo_cli()
     if exe and origin == "sibling-skill" and not args.check:
         exe, origin = install_jdo_cli_from(exe), "copied-from-sibling-skill"
-    python312 = find_python312()
+    import jdo_bridge_probe as probe
+
+    python312 = probe.find_bridge_python()
     if python312:
         os.environ["JDO_PYTHON312"] = str(python312)
         if not args.check and os.name == "nt":
@@ -529,9 +531,14 @@ def main(argv: list[str] | None = None) -> int:
     jdo: dict[str, Any] = {"binary": str(exe) if exe else "", "origin": origin,
                            "python312": str(python312) if python312 else "",
                            "certifi312": python312_has_certifi(python312)}
+    verdict = None
     if exe:
         os.environ.setdefault("JDO_CLI_PATH", str(exe))
         jdo.update(prepare_runtime(exe, python312, args.check))
+        runtime_file = Path(jdo.get("runtime") or "")
+        if python312 and jdo.get("runtime") and runtime_file.is_file():
+            verdict = probe.probe_runtime(runtime_file, runtime_file.read_bytes(), python=python312, cache=runtime_file.parent / "bridge-probe.json")
+    jdo["bridge"] = probe.bridge_status(exe=exe, python=python312, runtime_ok=verdict)
     report["jdoCli"] = jdo
     report["profiles"] = jdo_profiles()
     store_path = SKILL / "config" / "store.local.json"

@@ -20,7 +20,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if sys.version_info[:2] != (3, 12):
-        raise RuntimeError("jdo-cli 0.3.4 runtime bridge requires Python 3.12")
+        raise RuntimeError("the bundled jdo-cli code only runs on Python 3.12")
 
     namespace = {"__name__": "jdo_cli_embedded", "__file__": "jdo-cli.py"}
     code = marshal.loads(args.runtime.read_bytes())
