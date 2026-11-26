@@ -42,6 +42,17 @@ def verify_store(store):
  if int(data.get('venderId') or 0)!=int(store['venderId']) or (data.get('shopBaseInfo') or {}).get('shopName')!=store['shopName']:raise ValueError('店铺三要素回查不匹配，禁止写入')
  cli.mark_jdo_store_verified(store['profile'],int(store['venderId']),store['shopName']);return actual
 
+def sku_detail_pending(detail, expected):
+    """Return local SKU keys whose remote productDetailDesc.desc is still empty."""
+    pending = []
+    for remote in detail.get('skuList') or []:
+        key = str(remote.get('outerId') or '')
+        desc = ((remote.get('productDetailDesc') or {}).get('desc') or '')
+        if key in expected and not str(desc).strip():
+            pending.append(expected[key]['skuKey'])
+    return pending
+
+
 def reject_credentials(value):
  if isinstance(value,dict):
   for key,item in value.items():
@@ -232,6 +243,16 @@ def review_package(root):
  root=Path(root);m=read_manifest(root);digest=review_digest(m,root);m['review']={'digest':digest,'at':time.strftime('%Y-%m-%dT%H:%M:%S'),'confirmedByUser':False};atomic_json(root/'manifest.json',m)
  facts=m.get('facts') or {};lines=['# 发布前确认清单','',f"店铺：{m['store']['shopName']}（{m['store']['profile']} / {m['store']['venderId']}）",f"类目：{facts.get('categoryId','待确认')}",f"标题：{facts.get('title') or m['title']}",f"品牌ID：{facts.get('brandId','待确认')}",f"包装/重量：{facts.get('packageLengthMm')} × {facts.get('packageWidthMm')} × {facts.get('packageHeightMm')} mm / {facts.get('weightKg')} kg",f"运费模板：{facts.get('freightTemplateId','待确认')}",f"无理由退货代码：{facts.get('sevenDayReturnCode','待确认')}",'','|SKU|规格|京东价|库存|','|---|---|---|---|']
  for s in facts.get('skus') or []:lines.append(f"|{s['key']}|{s['spec']}|{s.get('jdPrice')}|{s.get('stock')}|")
+ pending_keys = list(m.get('skuDetailPendingKeys') or [])
+ if m.get('skuDetailManualPending') and not pending_keys:
+     pending_keys = [s['key'] for s in facts.get('skus') or []]
+ lines += [
+     '',
+     f"详情模式：{m.get('detailMode') or 'SPU'}",
+     f"SKU 详情待手动设置：{'是' if m.get('skuDetailManualPending') else '否'}",
+     f"待设置 SKU：{'、'.join(pending_keys) if pending_keys else '无'}",
+     '客户端操作步骤：' + '；'.join(m.get('skuDetailManualSteps') or []),
+ ]
  gate=dp.check_detail_set(m,root);details=m.get('detailImages') or []
  lines += ['','## 详情页（发布前门槛：'+('通过' if gate['ok'] else '未通过，禁止发布')+'）',f'详情页：{len(details)} 张（默认6-8张，宽790px，PC与手机端同图）']
  if gate.get('exemption'):lines.append(f"例外原因（{gate['exemption']['type']}）：{gate['exemption']['reason']}")
@@ -387,6 +408,9 @@ def verify_package(root,attempts=18,interval=10):
  else:raise ReconcileRequired('Product propagation pending; only retry readback')
  atomic_json(root/'.publish/readback-apply.json',apply);atomic_json(root/'.publish/readback-product.json',detail)
  expected={s['vendorSku']:s for s in listing['skus']};online={str(s.get('outerId')):s for s in detail['skuList']};problems=[]
+ pending=sku_detail_pending(detail,expected)
+ m['detailMode']='SPU';m['skuDetailManualPending']=bool(pending);m['skuDetailPendingKeys']=pending
+ m['skuDetailReadback']={'productInfoDetailDescPresent':bool((((apply.get('productInfo') or {}).get('productDetailDesc') or {}).get('desc') or '').strip()),'pendingSkuKeys':pending,'checkedAt':time.strftime('%Y-%m-%dT%H:%M:%S')}
  if set(online)!=set(expected) or len(detail['skuList'])!=len(expected):problems.append('SKU merchant-code set mismatch')
  from image_patch_update import group_urls
  groups=group_urls(apply)

@@ -101,4 +101,6 @@ def initial_manifest(store,photos,title,reference_url=None):
  return {'schemaVersion':SCHEMA_VERSION,'mode':'photo-new-listing','status':'INFORMATION_PENDING','store':deepcopy(store),
          'profile':store['profile'],'venderId':int(store['venderId']),'shopName':store['shopName'],'productId':None,'skuIds':[],
          'title':title,'sellingPoints':[],'facts':{},'sourcePhotos':photos,'reference':{'url':reference_url,'purpose':'style-only','questionAnswered':True},
-         'mainImages':[],'detailImages':[],'variants':[],'timings':{},'video':{}}
+         'mainImages':[],'detailImages':[],'variants':[],'timings':{},'video':{},
+         'detailMode':'SPU','skuDetailManualPending':True,'skuDetailPendingKeys':[],
+         'skuDetailManualSteps':['在京麦客户端打开目标商品编辑页','切换到“详情随 SKU 切换”模式','按待设置 SKU 清单逐个关联详情','保存后回读 productInfo.productDetailDesc 与 skuList[].productDetailDesc.desc','回读全部通过后才将 skuDetailManualPending 改为 false']}

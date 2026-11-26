@@ -341,6 +341,8 @@ def delivery_checks(manifest):
     c = dict(manifest.get('deliveryChecks') or {})
     binding = ((manifest.get('video') or {}).get('binding') or {})
     c['videoBound'] = binding.get('stage') == 'VIDEO_VERIFIED'
+    c['detailMode'] = manifest.get('detailMode') or 'SPU'
+    c['skuDetailManualPending'] = bool(manifest.get('skuDetailManualPending'))
     for key in ('platformValidationPassed', 'productOnSale', 'detailQualityPassed'):
         c[key] = bool(c.get(key))
     return c
@@ -350,6 +352,10 @@ def completion_statement(checks):
     failed = [k for k in ('platformValidationPassed', 'productOnSale', 'detailQualityPassed') if not checks.get(k)]
     if failed:
         return '上架未完成：' + '、'.join(failed) + ' 未通过'
+    if checks.get('skuDetailManualPending') and not checks.get('videoBound'):
+        return '上架完成（SKU 详情仍需京麦客户端人工设置；主图视频尚未绑定，不能称全部完成）'
+    if checks.get('skuDetailManualPending'):
+        return '上架完成（SKU 详情仍需京麦客户端人工设置）'
     return '全部完成' if checks.get('videoBound') else '上架完成（主图视频尚未绑定，不能称全部完成）'
 
 

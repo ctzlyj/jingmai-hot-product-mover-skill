@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.7 (2026-11-26)
+SKU 维度详情模式边界修正。
+- 明确“详情随 SKU 切换”仅京麦客户端人工设置；开放 API / schema / 网页端均不支持。
+- 禁止探测 descModel、灰度 key、网页自动化或客户端 CDP。
+- 交付模板增加 detailMode=SPU、skuDetailManualPending、待设置 SKU 列表和客户端人工步骤。
+- 回读规则强制同时核对 productInfo.productDetailDesc 与 skuList[].productDetailDesc.desc，接口 success 不再视为生效。
+
+
 ## 1.2.6 (2026-11-11)
 大请求桥去掉对 CLI 版本/运行时指纹的整体拒绝，小请求不再依赖系统 Python（P0-1）。
 - 小请求（命令行放得下）直接走官方 CLI，不需要系统 Python 3.12，也不提取 CLI 内部运行时；只有超过命令行上限的大请求才走桥。
@@ -31,4 +39,3 @@
 
 ## 1.2.1 / 1.2.0
 - 实拍图上新三款公司 GPT 模型生成与评审发布流程。
-

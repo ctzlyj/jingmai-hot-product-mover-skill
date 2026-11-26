@@ -212,8 +212,45 @@
         },
         "checkedAt": {
           "type": "string"
+        },
+        "detailMode": {
+          "type": "string",
+          "enum": [
+            "SPU"
+          ],
+          "description": "交付时的详情模式；SKU 维度详情仅京麦客户端人工设置"
+        },
+        "skuDetailManualPending": {
+          "type": "boolean",
+          "description": "SKU 维度详情是否仍需京麦客户端人工设置"
         }
       }
+    },
+    "detailMode": {
+      "type": "string",
+      "enum": [
+        "SPU"
+      ],
+      "description": "详情模式：当前开放接口仅支持 SPU 详情；SKU 维度详情需京麦客户端人工设置"
+    },
+    "skuDetailManualPending": {
+      "type": "boolean",
+      "description": "SKU 维度详情是否仍需京麦客户端人工设置"
+    },
+    "skuDetailPendingKeys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "description": "仍需人工设置 SKU 详情的 skuKey 列表"
+    },
+    "skuDetailManualSteps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "京麦客户端人工设置 SKU 维度详情的步骤"
     }
   },
   "$defs": {
