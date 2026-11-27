@@ -995,7 +995,7 @@ def reconcile(jm, cfg: dict, out_dir: Path, state: dict | None = None) -> dict:
                 return {"found": True, "timeVerified": True, "applyId": apply_id, "source": "applyId"}
         except Exception:
             pass
-    title = str(state.get("title") or cfg["title"])
+    title = str(state.get("title") or manifest.get("title") or cfg.get("title") or "")
     started = int(state.get("attemptStartedAtMs") or 0)
     resp = jm.get("jdo-product-status", "/rest/sp-product/v0/products", {
         "scopeSet": ["productId", "productName", "productStatus", "created"],
@@ -1016,6 +1016,65 @@ def reconcile(jm, cfg: dict, out_dir: Path, state: dict | None = None) -> dict:
                     "productId": row.get("productId"),
                     "applyId": str(row.get("productId"))}
     return {"found": False, "olderSameTitle": [row.get("productId") for row in matches]}
+
+
+def recheck_source_prices(jm, cfg: dict, out_dir: Path) -> list[dict]:
+    mismatches = []
+    cache: dict[str, list[dict]] = {}
+    for item in cfg["topSkus"]:
+        pid = str(item["pid"])
+        if pid not in cache:
+            resp = jm.get("jdo-product-update", "/rest/sp-product/v0/product-apply/{applyId}",
+                          {"applyId": pid, "scene": "pop"})
+            cache[pid] = (resp.get("data") or {}).get("skuList") or []
+        sku = next((row for row in cache[pid]
+                    if str(row.get("skuId")) == str(item["skuId"])), None)
+        if sku is None:
+            mismatches.append({"spec": item["spec"], "skuId": item["skuId"],
+                               "configured": item["price"], "current": None,
+                               "reason": "源 SKU 未找到"})
+            continue
+        current = (sku.get("priceInfo") or {}).get("jdPrice")
+        try:
+            current_money = money(current)
+        except AggregationError:
+            mismatches.append({"spec": item["spec"], "skuId": item["skuId"],
+                               "configured": item["price"], "current": current,
+                               "reason": "源 SKU 无有效价格"})
+            continue
+        if current_money != money(item["price"]):
+            mismatches.append({"spec": item["spec"], "skuId": item["skuId"],
+                               "configured": item["price"], "current": f"{current_money:.2f}",
+                               "reason": "价格不一致"})
+    return mismatches
+
+
+def reconcile_command(cfg_path: Path) -> dict:
+    cfg = validate_config(_read_json(cfg_path), require_top_skus=False)
+    out_dir = Path(cfg_path).parent
+    state = load_state(out_dir)
+    if not state:
+        return {"status": "NO_STATE", "found": False,
+                "message": "没有 submit_state.json，尚未提交过"}
+    jm = load_mover()
+    verify_store(jm, cfg)
+    found = reconcile(jm, cfg, out_dir, state)
+    if found.get("found") and found.get("timeVerified"):
+        apply_id = str(found.get("applyId") or found.get("productId") or "")
+        state.update({"state": "CREATED", "applyId": apply_id,
+                      "reconciledAt": _now_iso(), "lastUpdate": _now_iso()})
+        save_state(out_dir, state)
+        manifest = _read_json(out_dir / "aggregate_manifest.json", {}) or {}
+        manifest["applyId"] = apply_id
+        _atomic_json(out_dir / "aggregate_manifest.json", manifest)
+        return {"status": "CREATED", "found": True, "applyId": apply_id,
+                "message": "回查发现草稿已创建，已写 CREATED"}
+    if found.get("found"):
+        return {"status": "FOUND_UNVERIFIED", "found": True,
+                "productId": found.get("productId"),
+                "message": "标题命中但创建时间无法确认；保持原状态，请人工核对"}
+    return {"status": "NOT_FOUND", "found": False,
+            "message": "未发现对应草稿；保持原状态"}
 
 
 def submit(cfg_path: Path, confirm: str, retry: bool = False) -> dict:
@@ -1039,8 +1098,6 @@ def submit(cfg_path: Path, confirm: str, retry: bool = False) -> dict:
             f"已存在 applyId={state.get('applyId') or manifest.get('applyId')}，禁止重复提交")
     if state.get("state") == "CREATED":
         raise SubmitBlocked("提交状态为 CREATED，禁止重复提交")
-    if state.get("state") == "SUBMITTING":
-        raise SubmitBlocked("提交状态为 SUBMITTING，结果不明；先运行 reconcile 只读回查，禁止重投")
     review = manifest.get("detailReview") or {}
     if review.get("markers") and not review.get("accepted"):
         raise SubmitBlocked(
@@ -1048,7 +1105,7 @@ def submit(cfg_path: Path, confirm: str, retry: bool = False) -> dict:
             "review.detailAccepted=true 并复核后重跑 build")
     jm = load_mover()
     verify_store(jm, cfg)
-    if state.get("state") == "UNKNOWN":
+    if state.get("state") in ("SUBMITTING", "UNKNOWN"):
         found = reconcile(jm, cfg, out_dir, state)
         if found.get("found"):
             if not found.get("timeVerified"):
@@ -1063,10 +1120,17 @@ def submit(cfg_path: Path, confirm: str, retry: bool = False) -> dict:
             _atomic_json(out_dir / "aggregate_manifest.json", manifest)
             raise SubmitBlocked(f"回查发现草稿已创建 applyId={apply_id}，不再重复提交")
         if not retry:
-            raise SubmitBlocked("上次提交结果未知，回查未发现草稿；确认后加 --retry 重新提交")
+            raise SubmitBlocked(
+                "上次提交处于 SUBMITTING/UNKNOWN，回查未发现草稿；确认后加 --retry 重新提交")
         state["state"] = "PREPARED"
         state["lastUpdate"] = _now_iso()
         save_state(out_dir, state)
+    mismatches = recheck_source_prices(jm, cfg, out_dir)
+    if mismatches:
+        raise SubmitBlocked(
+            "源 SKU 价格已变化，禁止提交旧 payload；请重新 build 并确认。差异: " +
+            "；".join(f"{item['spec']} 配置={item['configured']} 当前={item['current']}"
+                     for item in mismatches))
     body = _read_json(out_dir / "publish_body.json")
     if not body or (body.get("productApplyDTO") or {}).get("saveActionType") != 0:
         raise SubmitBlocked("publish_body.json 的 saveActionType 必须为 0")
@@ -1140,6 +1204,7 @@ def verify(cfg_path: Path) -> dict:
     expected = {sku["spec"]: sku for sku in manifest.get("skus") or []}
     problems: list[str] = []
     pending: list[str] = []
+    actual_specs: list[str] = []
     priced = single = multi = detail_ok = True
     for sku in skus:
         attrs = {attr.get("attrName"): attr.get("attrValueAlias")
@@ -1149,6 +1214,7 @@ def verify(cfg_path: Path) -> dict:
         desc = detail_desc.get("desc") if isinstance(detail_desc, dict) else detail_desc
         alias = list(attrs.values())
         spec = alias[0] if alias else "?"
+        actual_specs.append(spec)
         if price in (None, ""):
             priced = False
             problems.append(f"{spec} 无价格")
@@ -1168,6 +1234,17 @@ def verify(cfg_path: Path) -> dict:
         elif not desc:
             detail_ok = False
             pending.append(spec)
+    expected_specs = set(expected)
+    actual_set = set(actual_specs)
+    missing_specs = sorted(expected_specs - actual_set)
+    extra_specs = sorted(actual_set - expected_specs)
+    sku_count_matches = len(skus) == len(expected) and not missing_specs and not extra_specs
+    if len(skus) != len(expected):
+        problems.append(f"SKU 数量不一致: 实际 {len(skus)} != 期望 {len(expected)}")
+    if missing_specs:
+        problems.append("缺少规格: " + "、".join(missing_specs))
+    if extra_specs:
+        problems.append("多出规格: " + "、".join(extra_specs))
     groups = (data.get("material") or {}).get("mainImages") or []
     if not groups:
         multi = False
@@ -1177,8 +1254,9 @@ def verify(cfg_path: Path) -> dict:
             multi = False
             problems.append(f"图片组 {group.get('uuid')} 少于5张")
     status = None
+    status_query_id = product_info.get("productId") or apply_id
     try:
-        pid_value = int(apply_id) if str(apply_id).isdigit() else apply_id
+        pid_value = int(status_query_id) if str(status_query_id).isdigit() else status_query_id
         listing = jm.get("jdo-product-status", "/rest/sp-product/v0/products", {
             "productIdList": [pid_value],
             "scopeSet": ["productId", "productName", "productStatus"],
@@ -1191,6 +1269,8 @@ def verify(cfg_path: Path) -> dict:
                 status = int(status) if status is not None else None
             except (TypeError, ValueError):
                 pass
+        else:
+            problems.append(f"未查到商品状态（查询ID={status_query_id}）")
     except Exception as exc:
         problems.append(f"商品状态回读失败: {exc}")
     draft_ok = status == DRAFT_STATUS
@@ -1204,6 +1284,7 @@ def verify(cfg_path: Path) -> dict:
         "singleColorDimension": single,
         "multiImage": multi,
         "skuDetailPerSku": detail_ok,
+        "skuCountMatches": sku_count_matches,
         "draftNotOnSale": draft_ok,
     }
     report = {
@@ -1293,6 +1374,8 @@ def main(argv: list[str] | None = None) -> int:
     submit_parser.add_argument("--retry", action="store_true")
     verify_parser = sub.add_parser("verify", help="只读回读验证")
     verify_parser.add_argument("--config", required=True)
+    reconcile_parser = sub.add_parser("reconcile", help="只读回查提交结果")
+    reconcile_parser.add_argument("--config", required=True)
     profile_parser = sub.add_parser("profile-check", help="只读检测浏览器 Profile 占用")
     profile_parser.add_argument("--profile-dir", required=True)
     args = parser.parse_args(argv)
@@ -1316,6 +1399,11 @@ def main(argv: list[str] | None = None) -> int:
             if not checks.get("skuDetailPerSku") and not report.get("problems"):
                 return 3
             return 2
+        if args.command == "reconcile":
+            result = reconcile_command(args.config)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return {"CREATED": 0, "NOT_FOUND": 1,
+                    "FOUND_UNVERIFIED": 2, "NO_STATE": 1}.get(result.get("status"), 2)
         if args.command == "profile-check":
             result = profile_lock_status(args.profile_dir)
             print(json.dumps(result, ensure_ascii=False, indent=2))

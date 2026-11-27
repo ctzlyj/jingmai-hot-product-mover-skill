@@ -28,7 +28,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 - **只保存草稿**：`saveActionType=0`，回读 `productStatus=105`；绝不点「提交并上架」。本模式不提供上架路径。
 - **TOP N 口径**：SPU 排名按该 SPU 全部 SKU 的 `orderQty30d` 汇总，不按商品列表 `salesVolume`；`salesVolume` 仅作参考。
 - **业务一致性**：聚合前断言所有源 SPU 的 `brandId`、`categoryId`、关键类目属性一致；不一致停止并让用户确认。尺寸/重量/运费模板/承诺取 TOP1，必须在确认清单中明示。
-- **提交幂等**：`submit_state.json` 记录 `PREPARED/SUBMITTING/CREATED/UNKNOWN`；已有 `applyId` 停止；超时/未知先按 applyId 或标题+时间回查，确认未创建才允许 `--retry`；禁止换工具/换目录重投。
+- **提交幂等**：`submit_state.json` 记录 `PREPARED/SUBMITTING/CREATED/UNKNOWN`；已有 `applyId` 停止；`SUBMITTING/UNKNOWN` 先运行 `reconcile` 只读回查，未找到才允许 `--retry`；提交前按 `topSkus` 重读源 SKU 当前价，不一致停止并要求重新 build；禁止换工具/换目录重投。
 - **SKU 维度详情**：默认生成逐 SKU 详情 HTML + 映射表 + 京麦客户端人工步骤，交付 `detailMode=SPU`、`skuDetailManualPending=true`、`skuDetailPendingKeys`；人工完成后回读 `skuList[].productDetailDesc.desc`。不包含网页自动化/Playwright/CDP，不探测 `descModel`。
 - **Profile 锁**：检测 `SingletonLock`/`SingletonCookie`/`SingletonSocket`/`lockfile` 和占用进程；检测到占用时停止并让用户关闭对应窗口，不按 PID 强杀、不删除别人的锁。
 - **确认点**：TOP N、规格命名、标题、库存、是否只保存草稿；确认前不得提交。`build` 输出 `确认清单.md` 与 `checklistHash`，`submit` 必须用该哈希前 8 位确认。

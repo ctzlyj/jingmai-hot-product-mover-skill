@@ -37,7 +37,7 @@
 
 ```json
 {
-  "venderId": 95995259,
+  "venderId": 12345678,
   "shopName": "店铺名",
   "jdoProfile": "pop-shop-xxx",
   "categoryId": 53181,
@@ -133,11 +133,23 @@ python -X utf8 scripts/top_sku_aggregation.py submit --config task_config.json -
 
 - 必须先核对 `确认清单.md`，并用其中的 `checklistHash` 前 8 位确认；
 - `saveActionType` 必须为 0；
-- 已有 `applyId`、状态为 `CREATED` 或 `SUBMITTING` 时一律停止；
+- 已有 `applyId` 或状态为 `CREATED` 时停止；
+- 状态为 `SUBMITTING`/`UNKNOWN` 时先调用同一回查逻辑，不直接死锁；
+- 回查确认已创建则写 `CREATED` 并停止；确认未创建才允许 `--retry`；
+- 提交前按 `topSkus` 的 `pid`/`skuId` 重新读取源 SKU 当前价，与配置价按分比较；不一致停止，提示重新 build/确认，不自动改价、不自动提交；
 - 提交前先写 `submit_state.json` 的 `SUBMITTING`，再发创建请求；
 - 超时/异常/未取到 applyId 写 `UNKNOWN`，先按 applyId 或标题+时间回查；
-- 回查确认已创建则接管并停止；确认未创建才允许 `--retry`；
 - 禁止换工具、换目录重投。
+
+只读回查命令：
+
+```powershell
+python -X utf8 scripts/top_sku_aggregation.py reconcile --config task_config.json
+```
+
+- 找到且时间可确认：写 `CREATED` + `applyId`，退出码 0；
+- 未找到：保持原状态，退出码 1；
+- 标题命中但时间不可确认：保持原状态，退出码 2，需人工核对。
 
 `submit_state.json` 状态：
 
@@ -178,6 +190,10 @@ python -X utf8 scripts/top_sku_aggregation.py verify --config task_config.json
 
 另加草稿状态检查：`productStatus=105`；`103` 表示已在售，必须报警。
 
+商品状态查询优先使用 apply 详情里的 `productInfo.productId`，只有 productId 缺失时才回退 applyId；查不到任何商品行时写入明确 problem，不静默判失败。
+
+SKU 数量校验：`len(skus) == len(expected)`，并列出缺失/多出的规格值；缺失或多出都写入 problems，`verify` 返回非 0。
+
 退出码：
 
 - `0`：四项全部通过；
@@ -198,7 +214,8 @@ python -X utf8 scripts/top_sku_aggregation.py verify --config task_config.json
 
 - `submit_state.json` 记录 `PREPARED/SUBMITTING/CREATED/UNKNOWN`。
 - 提交前若已有 `applyId` 则停止。
-- 超时/未知先按 `applyId` 或标题+时间回查；确认未创建才允许 `--retry`。
+- 状态为 `SUBMITTING`/`UNKNOWN` 时先运行 `reconcile` 只读回查；未找到才允许 `--retry`。
+- 提交前按 `topSkus` 重读源 SKU 当前价；不一致停止并要求重新 build。
 - 禁止换工具、换目录重投。
 - 提交前必须先写 `SUBMITTING`，再发创建请求。
 

@@ -66,7 +66,7 @@ def write_workspace(tmp, sources, *, top_n=2, stock=100, title="聚合测试链�
             "price": prices[index - 1], "spec": specs[index - 1],
         })
     cfg = {
-        "venderId": 95995259, "shopName": "测试店", "jdoProfile": "pop-test",
+        "venderId": 12345678, "shopName": "测试店", "jdoProfile": "pop-test",
         "categoryId": 53181, "topN": top_n, "title": title, "stock": stock,
         "draftOnly": True, "topSkus": top_skus,
     }
@@ -92,14 +92,19 @@ def base_config():
 
 
 class FakeJm:
-    def __init__(self, *, vender=95995259, shop="测试店", validation=None,
-                 create=None, apply_detail=None, products=None):
+    def __init__(self, *, vender=12345678, shop="测试店", validation=None,
+                 create=None, apply_detail=None, products=None, source_applies=None):
         self.vender = vender
         self.shop = shop
         self.validation = validation if validation is not None else {"success": True, "data": {"passFlag": True}}
         self.create = create if create is not None else {"success": True, "data": {"applyId": "9001"}}
         self.apply_detail = apply_detail or {}
         self.products = products or []
+        self.source_applies = source_applies if source_applies is not None else {
+            "101": make_source(101),
+            "102": make_source(102, price="29.90"),
+        }
+        self.product_query_ids = []
         self.calls = []
         self.profile = None
         self.verified = None
@@ -118,8 +123,13 @@ class FakeJm:
         if "venderinfo" in url:
             return {"data": {"venderId": self.vender, "shopBaseInfo": {"shopName": self.shop}}}
         if "product-apply" in url:
+            apply_id = str((params or {}).get("applyId") or "")
+            if apply_id in self.source_applies:
+                return {"data": self.source_applies[apply_id]}
             return {"data": self.apply_detail}
         if "products" in url:
+            if params and "productIdList" in params:
+                self.product_query_ids.append(params["productIdList"])
             return {"data": self.products,
                     "paginationData": {"totalItems": len(self.products), "currentPage": 1}}
         return {"data": {}}
@@ -479,6 +489,111 @@ class SubmitTests(unittest.TestCase):
             self.assertEqual("CREATED", out["status"])
             self.assertEqual("9002", out["applyId"])
 
+    def test_submit_blocks_when_source_price_changed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _, result = self._built(tmp)
+            fake = FakeJm(source_applies={
+                "101": make_source(101, price="21.90"),
+                "102": make_source(102, price="29.90"),
+            })
+            with patch.object(tsa, "load_mover", return_value=fake):
+                with self.assertRaises(tsa.SubmitBlocked) as ctx:
+                    tsa.submit(root / "task_config.json", result["checklistHash"][:8])
+            self.assertIn("价格已变化", str(ctx.exception))
+            self.assertFalse(any("product-applies" in call[1] for call in fake.calls))
+
+    def test_submit_proceeds_when_source_price_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _, result = self._built(tmp)
+            fake = FakeJm()
+            with patch.object(tsa, "load_mover", return_value=fake):
+                out = tsa.submit(root / "task_config.json", result["checklistHash"][:8])
+            self.assertEqual("CREATED", out["status"])
+
+    def test_submitting_reconcile_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cfg, result = self._built(tmp)
+            (root / "submit_state.json").write_text(json.dumps({
+                "state": "SUBMITTING", "title": cfg["title"],
+                "attemptStartedAtMs": int(time.time() * 1000),
+            }), encoding="utf-8")
+            fake = FakeJm(products=[{
+                "productId": 9001, "productName": cfg["title"],
+                "productStatus": 105, "created": int(time.time() * 1000),
+            }])
+            with patch.object(tsa, "load_mover", return_value=fake):
+                with self.assertRaises(tsa.SubmitBlocked) as ctx:
+                    tsa.submit(root / "task_config.json", result["checklistHash"][:8])
+            self.assertIn("已创建", str(ctx.exception))
+            state = json.loads((root / "submit_state.json").read_text(encoding="utf-8"))
+            self.assertEqual("CREATED", state["state"])
+            self.assertEqual("9001", state["applyId"])
+            self.assertFalse(any("product-applies" in call[1] for call in fake.calls))
+
+    def test_submitting_reconcile_not_found_requires_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cfg, result = self._built(tmp)
+            (root / "submit_state.json").write_text(json.dumps({
+                "state": "SUBMITTING", "title": cfg["title"],
+                "attemptStartedAtMs": int(time.time() * 1000),
+            }), encoding="utf-8")
+            fake = FakeJm(products=[])
+            with patch.object(tsa, "load_mover", return_value=fake):
+                with self.assertRaises(tsa.SubmitBlocked):
+                    tsa.submit(root / "task_config.json", result["checklistHash"][:8])
+            with patch.object(tsa, "load_mover", return_value=fake):
+                out = tsa.submit(root / "task_config.json", result["checklistHash"][:8], retry=True)
+            self.assertEqual("CREATED", out["status"])
+
+    def test_submitting_reconcile_time_unverified_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cfg, result = self._built(tmp)
+            (root / "submit_state.json").write_text(json.dumps({
+                "state": "SUBMITTING", "title": cfg["title"],
+                "attemptStartedAtMs": int(time.time() * 1000),
+            }), encoding="utf-8")
+            fake = FakeJm(products=[{
+                "productId": 9001, "productName": cfg["title"],
+                "productStatus": 105, "created": "not-a-date",
+            }])
+            with patch.object(tsa, "load_mover", return_value=fake):
+                with self.assertRaises(tsa.SubmitBlocked) as ctx:
+                    tsa.submit(root / "task_config.json", result["checklistHash"][:8])
+            self.assertIn("无法确认", str(ctx.exception))
+            state = json.loads((root / "submit_state.json").read_text(encoding="utf-8"))
+            self.assertEqual("SUBMITTING", state["state"])
+
+    def test_reconcile_command_creates_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cfg, result = self._built(tmp)
+            (root / "submit_state.json").write_text(json.dumps({
+                "state": "SUBMITTING", "title": cfg["title"],
+                "attemptStartedAtMs": int(time.time() * 1000),
+            }), encoding="utf-8")
+            fake = FakeJm(products=[{
+                "productId": 9001, "productName": cfg["title"],
+                "productStatus": 105, "created": int(time.time() * 1000),
+            }])
+            with patch.object(tsa, "load_mover", return_value=fake):
+                out = tsa.reconcile_command(root / "task_config.json")
+            self.assertEqual("CREATED", out["status"])
+            state = json.loads((root / "submit_state.json").read_text(encoding="utf-8"))
+            self.assertEqual("CREATED", state["state"])
+
+    def test_reconcile_command_not_found_keeps_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cfg, result = self._built(tmp)
+            (root / "submit_state.json").write_text(json.dumps({
+                "state": "SUBMITTING", "title": cfg["title"],
+                "attemptStartedAtMs": int(time.time() * 1000),
+            }), encoding="utf-8")
+            fake = FakeJm(products=[])
+            with patch.object(tsa, "load_mover", return_value=fake):
+                out = tsa.reconcile_command(root / "task_config.json")
+            self.assertEqual("NOT_FOUND", out["status"])
+            state = json.loads((root / "submit_state.json").read_text(encoding="utf-8"))
+            self.assertEqual("SUBMITTING", state["state"])
+
     def test_detail_marker_blocks_submit_until_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
             sources = {"101": make_source(101, detail="<p>淘宝同款</p>"),
@@ -502,28 +617,32 @@ class SubmitTests(unittest.TestCase):
 
 
 class VerifyTests(unittest.TestCase):
-    def _built_with_apply(self, tmp, *, detail="<p>detail</p>", status=105):
+    def _built_with_apply(self, tmp, *, detail="<p>detail</p>", status=105,
+                          skus=None, product_id=9001, apply_id="9001", products=None):
         sources = {"101": make_source(101), "102": make_source(102, price="29.90")}
         root, cfg = write_workspace(tmp, sources, prices=["19.90", "29.90"])
         tsa.build(root / "task_config.json")
         manifest_path = root / "aggregate_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["applyId"] = "9001"
+        manifest["applyId"] = apply_id
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-        apply_detail = {
-            "productInfo": {"productId": 9001, "productStatus": status, "wareStatus": 2},
-            "skuList": [
+        if skus is None:
+            skus = [
                 {"skuId": 1, "saleAttrs": [{"attrName": "颜色", "attrValueAlias": "规格1"}],
                  "priceInfo": {"jdPrice": 19.9}, "productDetailDesc": {"desc": detail}},
                 {"skuId": 2, "saleAttrs": [{"attrName": "颜色", "attrValueAlias": "规格2"}],
                  "priceInfo": {"jdPrice": 29.9}, "productDetailDesc": {"desc": detail}},
-            ],
+            ]
+        apply_detail = {
+            "productInfo": {"productId": product_id, "productStatus": status, "wareStatus": 2},
+            "skuList": skus,
             "material": {"mainImages": [
                 {"uuid": "0000000000", "imageInfoList": [{"imgUrl": f"x{i}"} for i in range(6)]},
             ]},
         }
-        fake = FakeJm(apply_detail=apply_detail,
-                      products=[{"productId": 9001, "productStatus": status}])
+        if products is None:
+            products = [{"productId": product_id, "productStatus": status}]
+        fake = FakeJm(apply_detail=apply_detail, products=products)
         return root, cfg, fake
 
     def test_verify_reports_pending_sku_details(self):
@@ -555,6 +674,58 @@ class VerifyTests(unittest.TestCase):
                 report = tsa.verify(root / "task_config.json")
             self.assertFalse(report["checks"]["draftNotOnSale"])
             self.assertTrue(any("103" in problem for problem in report["problems"]))
+
+    def test_verify_queries_product_id_not_apply_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _, fake = self._built_with_apply(tmp, product_id=8001, apply_id="9001")
+            with patch.object(tsa, "load_mover", return_value=fake):
+                report = tsa.verify(root / "task_config.json")
+            self.assertTrue(report["checks"]["draftNotOnSale"])
+            self.assertEqual([[8001]], fake.product_query_ids)
+            self.assertEqual(8001, report["productId"])
+
+    def test_verify_missing_product_row_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _, fake = self._built_with_apply(tmp, products=[])
+            with patch.object(tsa, "load_mover", return_value=fake):
+                report = tsa.verify(root / "task_config.json")
+            self.assertFalse(report["checks"]["draftNotOnSale"])
+            self.assertTrue(any("未查到商品状态" in problem for problem in report["problems"]))
+
+    def test_verify_missing_sku_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skus = [
+                {"skuId": 1, "saleAttrs": [{"attrName": "颜色", "attrValueAlias": "规格1"}],
+                 "priceInfo": {"jdPrice": 19.9}, "productDetailDesc": {"desc": "<p>detail</p>"}},
+            ]
+            root, _, fake = self._built_with_apply(tmp, skus=skus)
+            with patch.object(tsa, "load_mover", return_value=fake):
+                report = tsa.verify(root / "task_config.json")
+            self.assertFalse(report["checks"]["skuCountMatches"])
+            self.assertTrue(any("SKU 数量不一致" in problem for problem in report["problems"]))
+            self.assertTrue(any("缺少规格" in problem for problem in report["problems"]))
+            with patch.object(tsa, "load_mover", return_value=fake), redirect_stdout(io.StringIO()):
+                code = tsa.main(["verify", "--config", str(root / "task_config.json")])
+            self.assertEqual(2, code)
+
+    def test_verify_extra_sku_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skus = [
+                {"skuId": 1, "saleAttrs": [{"attrName": "颜色", "attrValueAlias": "规格1"}],
+                 "priceInfo": {"jdPrice": 19.9}, "productDetailDesc": {"desc": "<p>detail</p>"}},
+                {"skuId": 2, "saleAttrs": [{"attrName": "颜色", "attrValueAlias": "规格2"}],
+                 "priceInfo": {"jdPrice": 29.9}, "productDetailDesc": {"desc": "<p>detail</p>"}},
+                {"skuId": 3, "saleAttrs": [{"attrName": "颜色", "attrValueAlias": "规格3"}],
+                 "priceInfo": {"jdPrice": 39.9}, "productDetailDesc": {"desc": "<p>detail</p>"}},
+            ]
+            root, _, fake = self._built_with_apply(tmp, skus=skus)
+            with patch.object(tsa, "load_mover", return_value=fake):
+                report = tsa.verify(root / "task_config.json")
+            self.assertFalse(report["checks"]["skuCountMatches"])
+            self.assertTrue(any("多出规格" in problem for problem in report["problems"]))
+            with patch.object(tsa, "load_mover", return_value=fake), redirect_stdout(io.StringIO()):
+                code = tsa.main(["verify", "--config", str(root / "task_config.json")])
+            self.assertEqual(2, code)
 
     def test_verify_main_exit_code_three_when_only_sku_detail_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -660,7 +831,7 @@ class CollectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = {
-                "venderId": 95995259, "shopName": "测试店", "jdoProfile": "pop-test",
+                "venderId": 12345678, "shopName": "测试店", "jdoProfile": "pop-test",
                 "categoryId": 53181, "topN": 2, "title": "", "stock": 100,
                 "draftOnly": True, "topSkus": [],
             }
