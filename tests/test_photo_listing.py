@@ -12,7 +12,7 @@ from detail_fixtures import valid_detail_set
 
 class PhotoListingTests(unittest.TestCase):
  def setUp(self):
-  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)/'listing-package';self.root.mkdir()
+  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve()/'listing-package';self.root.mkdir()
   self.store={'profile':'pop-test','venderId':1,'shopName':'测试'}
   for name in ('photo.png','main.jpg','sku.jpg','detail.jpg'):Image.new('RGB',(800,800),'white').save(self.root/name)
   self.m=initial_manifest(self.store,['photo.png'],'测试收纳架',None);self.m['facts']=facts();self.m['mainImages']=[{'localPath':'main.jpg','role':'white'}];self.m['variants']=[{'key':'one','skuImage':{'localPath':'sku.jpg'}}];valid_detail_set(self.root,self.m)

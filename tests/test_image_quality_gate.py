@@ -159,7 +159,7 @@ class ImageQualityGateTests(unittest.TestCase):
             from PIL import Image, ImageDraw
             for i,path in enumerate((original,final,detail)):
                 image=Image.new('RGB',(64,64),('white','gray','black')[i]); ImageDraw.Draw(image).rectangle((i*4,8,25+i*4,40),fill='red'); image.save(path)
-            record=lambda path: {'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+            record=lambda path: {'path':str(path.resolve()),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
             candidate={'sourceItemId':'123','mainImages':[str(final)],'detailImages':[str(detail)],'skus':[]}
             report={'promptVersion':PROMPT_VERSION,'items':{'123':{'sourceFirst':record(original), 'images':[
                 {'role':'main1','source':record(original),'final':record(final),'decision':'KEEP','pairAccepted':True},
@@ -198,7 +198,7 @@ class ImageQualityGateTests(unittest.TestCase):
             Image.new('RGB', (64, 64), 'white').save(original)
             Image.new('RGB', (64, 64), 'white').save(final)
             def record(path):
-                return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                return {'path': str(path.resolve()), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
             candidate = {'sourceItemId': '123', 'mainImages': [str(final)], 'detailImages': [], 'skus': [],
                          'gateMode': 'remake'}
             row = {'role': 'main1', 'source': record(original), 'final': record(final),
