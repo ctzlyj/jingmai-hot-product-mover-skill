@@ -51,7 +51,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 发品整版 schema 这类大请求受 Windows 命令行长度限制，只有大请求才依赖 Python 3.12，且不再绑定某个京麦 CLI 版本（0.3.4/0.3.7 都可用）；缺少时自检只提示“发品、整版编辑、属性补全、素材绑定暂时不能做，查询、审计、授权、本地生成照常”，见 `references/large-requests-and-cli-versions.md`。
 
-结构化销售属性（如类目 35057 的“尺寸”）必须带 `templateSkuProps`；**平台预校验通过不代表其别名正确，真实提交才会报 1010300506**，所以先 `discover-sale-templates`（官方接口→同店同类目在架商品→停下问用户），缺失时发布前即阻止。发布被平台明确拒绝记 `REJECTED`，`REJECTED`/`UNKNOWN` 须 `confirm-not-created` 只读回查无商品后才可再提交，详见 `references/structured-sale-attributes.md`。在架状态值 `103`（和 `1`）才算在架。
+结构化销售属性（如类目 35057 的“尺寸”）必须带 `templateSkuProps`；**平台预校验通过不代表其别名正确，真实提交才会报 1010300506**，所以先 `discover-sale-templates`（官方接口→同店同类目在架商品→核对目标店编辑器中的控件与选项），缺失时发布前即阻止。发布被平台明确拒绝记 `REJECTED`，`REJECTED`/`UNKNOWN` 须 `confirm-not-created` 只读回查无商品后才可再提交，详见 `references/structured-sale-attributes.md`。在架状态值 `103`（和 `1`）才算在架。
 
 完整接口与状态机见 `references/photo-new-listing.md`，详情页方案/门槛/补救见 `references/detail-pages.md`，商品确认规则与数据契约见 `references/listing-package.schema.json`。
 
