@@ -1325,6 +1325,28 @@ def command_validate_jd(args: argparse.Namespace) -> int:
     return 0 if not strong else 2
 
 
+def submit_product_once(body: Path, output: Path) -> dict[str, Any]:
+    """Reuse matrix publishing's persisted unknown-write guard for direct entrances."""
+    import matrix_listing as matrix
+    state_path = Path(body).with_name(Path(body).stem + ".submit-state.json")
+    matrix.publish_guard(load_json(state_path) if state_path.exists() else {})
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload_sha=hashlib.sha256(Path(body).read_bytes()).hexdigest()
+    matrix.save_json_atomic(state_path, {"stage":"SUBMITTING","payloadSha256":payload_sha})
+    response = run_jdo_large(
+        url="/rest/sp-product/v0/product-applies", method="POST", body_path=body,
+        skill_id="jdo-product-publish", yes=True,
+    )
+    matrix.save_json_atomic(output, response)
+    data = response.get("data") or {}
+    matrix.save_json_atomic(state_path, {
+        "stage": "PUBLISHED" if data.get("productId") else "SUBMITTING",
+        "productId": data.get("productId"), "applyId": data.get("applyId"), "payloadSha256":payload_sha,
+    })
+    return response
+
+
 def command_publish(args: argparse.Namespace) -> int:
     if args.confirm != "PUBLISH_TO_JD":
         raise JdoError("真实发品必须传 --confirm PUBLISH_TO_JD")

@@ -197,7 +197,10 @@ def verify_store_identity(store_config: dict[str, Any], profile: str) -> dict[st
     }
 
 
-def product_apply_rejection(product_id: int) -> dict[str, Any] | None:
+def product_apply_rejection(product_id: int, *, apply_id=None, detail=None) -> dict[str, Any] | None:
+    if apply_id is not None or detail is not None:
+        from pop_copy.original_application import read_rejection
+        return read_rejection(product_id, apply_id=apply_id, detail=detail)
     try:
         detail = jingmai.get(
             "jdo-product-update",
