@@ -12,6 +12,8 @@ import jdo_listing_mvp as cli
 import jd_product_pipeline as pipeline
 import detail_pages as dp
 import sale_attr_templates as sat
+import photo_samples
+import tempfile
 from jd_product_mover import HttpClient,MoverError,parse_mobile_page,parse_detail_urls
 from photo_contract import (SCHEMA_VERSION,ReconcileRequired,check_store,initial_manifest,join_detail_panels,media_entries,missing_information,package_path,review_digest,walk_components)
 from photo_generation import atomic_json,generate_tasks,load,sha
@@ -140,11 +142,81 @@ def make_detail_plan(m,root):
  style=(m.get('reference') or {}).get('styleSummary') or DEFAULT_STYLE
  return dp.build_detail_plan(m,root,identity_rules=IDENTITY_RULES,style=style,reference_terms=(m.get('reference') or {}).get('bannedTerms') or [])
 
-def make_plan(root,reference=None,preview=False,only=None):
+def make_sample(root, design, image_id):
+    root = Path(root).resolve()
+    parent = read_manifest(root)
+    rows = [row for row in design.get('images', []) if row.get('id') == image_id]
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,50}', image_id) or len(rows) != 1:
+        raise ValueError('请选择本任务唯一的样张编号')
+    row = rows[0]
+    role, key, photos = row.get('role'), row.get('skuKey'), row.get('photos')
+    if role not in ('main','sku') or (role == 'sku' and key not in {x['key'] for x in parent['facts'].get('skus', [])}):
+        raise ValueError('样张图位或规格与本任务不符')
+    if not isinstance(photos, list) or not photos or not set(photos).issubset(parent['sourcePhotos']) or not str(row.get('prompt') or '').strip():
+        raise ValueError('请提供本商品的来源照片与本次打样设计')
+    sample = package_path(root, '.samples/'+image_id)
+    origin = {'packageId':parent['packageId'], 'imageId':image_id}
+    task = {'id':image_id, 'role':role, 'size':row.get('size') or '1024x1024',
+            'prompt':row['prompt'], 'previewOnly':True, 'photos':[str(package_path(sample,p)) for p in photos],
+            'sourceSha256':[sha(package_path(root,p)) for p in photos]}
+    if role == 'sku':
+        task['skuKey'] = key
+    if not sample.exists():
+        sample.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=sample.parent) as tmp:
+            staged = Path(tmp)/'package'
+            staged.mkdir()
+            data = deepcopy(parent)
+            data.update(packageId=uuid.uuid4().hex, sampleOf=origin, sourcePhotos=photos,
+                        acceptedSamples={}, mainImages=[], detailImages=[], variants=[], productId=None, skuIds=[])
+            for name in photos:
+                dest = package_path(staged,name)
+                dest.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copyfile(package_path(root,name),dest)
+            atomic_json(staged/'manifest.json',data)
+            atomic_json(staged/'plan.json',[task])
+            staged.rename(sample)
+    manifest = read_manifest(sample)
+    if (manifest.get('sampleOf') != origin or manifest['store'] != parent['store']
+            or manifest['facts'] != parent['facts'] or load(sample/'plan.json') != [task]
+            or [sha(package_path(sample,p)) for p in photos] != task['sourceSha256']):
+        raise ValueError('原样张、设计或来源已经改变，请另选样张编号')
+    return {'samplePackage':str(sample), 'imageId':image_id, 'plannedImages':1}
+
+
+def accepted_preview_plan(root, design):
+    """Plan local reuse of selected accepted pixels without creating a model request."""
+    rows = design.get('images', [])
+    if not rows or len({row['id'] for row in rows}) != len(rows):
+        raise ValueError('已接受样张的图位需要唯一编号')
+    tasks = []
+    for row in rows:
+        relative = row.get('reusePhoto')
+        record = photo_samples.accepted_context(root,row['id'],read_manifest)
+        if relative != record['reusePhoto'] or (row['role'],row.get('skuKey')) != (record['role'],record['skuKey']):
+            raise ValueError('请核对已接受样张原图位及规格')
+        path = package_path(root,relative)
+        tasks.append(dict(id=row['id'],role=row['role'],skuKey=row.get('skuKey'),reusePhoto=relative,
+                          photos=[str(path)],sourceSha256=[record['sha256']],previewOnly=True))
+    return tasks
+
+
+def make_plan(root,reference=None,preview=False,only=None,design=None):
  root=Path(root);m=read_manifest(root);reference=reference if reference is not None else load(root/'reference.json',{})
- tasks=build_generation_plan(m,root,reference,preview,only);atomic_json(root/'plan.json',tasks);modules=0
+ if design is not None and (not preview or only):
+  raise ValueError('按逐图清单单独展示已接受样张时使用 --preview')
+ # Scope each acknowledged output to its slot. Unrelated SKUs keep their original source photos.
+ source_manifest={**m,'sourcePhotos':[p for p in m['sourcePhotos'] if p not in m.get('acceptedSamples',{})]}
+ tasks=accepted_preview_plan(root,design) if design is not None else build_generation_plan(source_manifest,root,reference,preview,only)
+ if not m.get('sampleOf') and design is None:
+  for task in tasks:
+   if any(re.fullmatch(re.escape(task['id'])+r'-[a-f0-9]{64}\.jpg',Path(p).name) for p in m.get('acceptedSamples', {})):
+    accepted=photo_samples.accepted_context(root,task['id'],read_manifest)
+    photo_samples.validate_reuse(m,task['role'],task.get('skuKey'),accepted['reusePhoto'],accepted['sha256'])
+    task['reusePhoto']=accepted['reusePhoto']
+ atomic_json(root/'plan.json',tasks);modules=0
  if not preview:
-  detail_plan=make_detail_plan(m,root);atomic_json(root/'detail-plan.json',detail_plan);modules=len(detail_plan['modules'])
+  detail_plan=make_detail_plan(source_manifest,root);atomic_json(root/'detail-plan.json',detail_plan);modules=len(detail_plan['modules'])
  return {'tasks':tasks,'previewOnly':preview,'detailModules':modules}
 
 def materialize_generated(root,plan,result):
@@ -152,9 +224,14 @@ def materialize_generated(root,plan,result):
  roles={t['role'] for t in plan};detail_only=roles=={'detail'}
  for task in plan:
   rec=records.get(task['id']) or {}
-  if rec.get('status')!='SUCCEEDED':continue
+  if not task.get('reusePhoto') and rec.get('status')!='SUCCEEDED':continue
   folder={'main':'主图','sku':'SKU图','detail':'详情图'}[task['role']];dest=root/folder/f'{task["id"]}.jpg';dest.parent.mkdir(exist_ok=True)
-  source=root/'.generation'/rec['localPath']
+  if task.get('reusePhoto'):
+   source=package_path(root,task['reusePhoto'])
+   if not photo_samples.validate_reuse(m,task['role'],task.get('skuKey'),task['reusePhoto'],sha(source)):
+    raise ValueError('没有与本任务图位相符的已接受样张')
+   rec={'model':'accepted-sample'}
+  else:source=root/'.generation'/rec['localPath']
   if task['role']=='detail':dp.normalize_detail_image(source,dest)
   else:shutil.copy2(source,dest)
   item={'id':task['id'],'localPath':str(dest.relative_to(root)),'sha256':sha(dest),'model':rec['model'],'onlineUrl':'','previewOnly':task.get('previewOnly',False)}
@@ -165,7 +242,8 @@ def materialize_generated(root,plan,result):
  m['detailImages']=details
  m.setdefault('timings',{})['generationSeconds']=result['seconds'];m['generationModels']=result['modelsUsed']
  m.pop('review',None);m.pop('imageReview',None)
- complete=result['successCount']==len(plan)
+ complete=result['successCount']+sum(bool(t.get('reusePhoto')) for t in plan)==len(plan)
+ if m.get('sampleOf') and complete:m['samplePlanSha256']=sha(root/'plan.json')
  if not detail_only:m['status']='MATERIAL_PREVIEW' if any(t.get('previewOnly') for t in plan) else ('MATERIAL_REVIEW_PENDING' if complete else 'MATERIAL_INCOMPLETE')
  atomic_json(root/'manifest.json',m);return m
 
@@ -462,8 +540,13 @@ def main(argv=None):
   if name=='confirm-not-created':p.add_argument('--reason',required=True)
   if name=='set-facts':p.add_argument('--facts',required=True,type=Path);p.add_argument('--style',type=Path)
   if name=='make-plan':p.add_argument('--preview',action='store_true');p.add_argument('--only',choices=['detail'],help='只重做详情模块（已有主图/SKU图不变）')
+  if name=='make-plan':p.add_argument('--image-prompts-file',type=Path,help='预览已接受样张时使用原图位及 reusePhoto')
   if name=='generate':p.add_argument('--redo',nargs='*',default=[])
   if name in ('prepare','publish','accept-images'):p.add_argument('--confirm',required=True);p.add_argument('--review-digest',required=True)
+ for name in ('make-sample','accept-sample','sample-context'):
+  p=sub.add_parser(name);p.add_argument('--package',required=True,type=Path);p.add_argument('--image-id',required=True)
+  if name=='make-sample':p.add_argument('--image-prompts-file',required=True,type=Path)
+  if name=='accept-sample':p.add_argument('--evidence',required=True)
  args=parser.parse_args(argv);root=args.package.resolve();command=args.command;command_began=time.monotonic()
  try:
   if command=='init':
@@ -489,10 +572,22 @@ def main(argv=None):
    structured=load(root/'sale-attr-templates.json',{}) or {};missing=missing+(['sale-attribute-template:'+m_['attrName'] for m_ in structured.get('missing') or []])
    question={'askTogetherOnce':True,'missingFields':missing,**({'saleAttributeQuestion':structured['ask']} if structured.get('ask') else {}),'rule':'参数必须由用户提供或明确确认；看不清的结构要求补拍，不按参考商品猜参数'}
    atomic_json(root/'missing-information.json',question);result=question
+  elif command=='make-sample':result=make_sample(root,load(args.image_prompts_file),args.image_id)
+  elif command=='accept-sample':
+   with package_lock(root,'.sample-accept.lock'):result=photo_samples.accept_sample(root,args.image_id,args.evidence,read_manifest)
+  elif command=='sample-context':result=photo_samples.accepted_context(root,args.image_id,read_manifest)
   elif command=='make-plan':
-   r=make_plan(root,preview=args.preview,only=args.only);result={'tasks':len(r['tasks']),'previewOnly':args.preview,'detailModules':r['detailModules']}
+   r=make_plan(root,preview=args.preview,only=args.only,design=load(args.image_prompts_file) if args.image_prompts_file else None);result={'tasks':len(r['tasks']),'previewOnly':args.preview,'detailModules':r['detailModules']}
   elif command=='generate':
-   plan=load(root/'plan.json');result=generate_tasks(plan,root/'.generation',redo=args.redo);materialize_generated(root,plan,result);review_package(root);result={k:v for k,v in result.items() if k!='ledger'}
+   plan=load(root/'plan.json')
+   for task in plan:
+    if task.get('reusePhoto'):
+     accepted=photo_samples.accepted_context(root,task['id'],read_manifest)
+     if accepted['reusePhoto']!=task['reusePhoto'] or (accepted['role'],accepted['skuKey'])!=(task['role'],task.get('skuKey')):
+      raise ValueError('原样张与本图位或规格不一致')
+   result=generate_tasks([t for t in plan if not t.get('reusePhoto')],root/'.generation',redo=args.redo)
+   materialize_generated(root,plan,result);review_package(root);result={k:v for k,v in result.items() if k!='ledger'}
+   result['reusedImages']=sum(bool(t.get('reusePhoto')) for t in plan)
   elif command=='review':result=review_package(root)
   elif command=='accept-images':result=accept_images(root,args.review_digest,confirm=args.confirm)
   elif command=='prepare':result=prepare_package(root,load(root/'reference.json'),confirm=args.confirm,digest=args.review_digest)

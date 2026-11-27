@@ -195,3 +195,5 @@ python scripts/merchant_template_import.py `
 只有以下证据全部满足才报告成功：商品详情可查、SKU 数量和组合一致、价格公式一致、商家编码唯一、库存专用接口一致、多套主图逐款式完整、详情图与保留页的数量/顺序一致；若有视频，还必须全部 SKU 的视频关系均为审核通过状态。
 
 状态机、幂等恢复与停止条件见 `references/state-machine.md` 和 `references/troubleshooting-and-stop-conditions.md`。完整业务交接见 `references/handoff-manual.md`。
+
+实拍上新先看一张时，宿主可给 photo_listing.py 的 make-sample 传原商品包、图位编号和逐图设计文件，仅生成该样张。验收走 accept-sample，后续 sample-context 按原包、图位、规格及文件哈希找回。make-plan 与 generate 可复用已接受的像素，模型和费用仍由当前宿主处理。
