@@ -73,7 +73,7 @@ def active_jdo_profile() -> str:
     return _ACTIVE_JDO_PROFILE
 
 
-def mark_jdo_store_verified(profile: str, vender_id: int, shop_name: str) -> None:
+def mark_jdo_store_verified(profile: str, vender_id: int, shop_name: str, shop_id: int | None = None) -> None:
     global _VERIFIED_JDO_STORE
     active_profile = active_jdo_profile()
     if str(profile).strip().lower() != active_profile:
@@ -85,6 +85,8 @@ def mark_jdo_store_verified(profile: str, vender_id: int, shop_name: str) -> Non
         "venderId": int(vender_id),
         "shopName": str(shop_name).strip(),
     }
+    if shop_id:
+        _VERIFIED_JDO_STORE["shopId"] = int(shop_id)
 
 
 def require_verified_jdo_store() -> dict[str, Any]:
@@ -107,6 +109,7 @@ def recheck_verified_jdo_store() -> dict[str, Any]:
     if (
         actual_vender_id != int(expected["venderId"])
         or actual_shop_name != str(expected["shopName"])
+        or (expected.get("shopId") and str(expected["shopId"]) != str(shop.get("shopId") or ""))
     ):
         raise JdoError(
             f"写操作前店铺身份已变化：Profile={expected['profile']}, "
@@ -148,7 +151,7 @@ def decode_process_output(value: bytes) -> str:
     return value.decode("utf-8", errors="replace")
 
 
-def parse_response(text: str) -> dict[str, Any]:
+def parse_response(text: str, *, method=None, url=None) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("HTTP ") and ":" in cleaned:
         cleaned = cleaned.split(":", 1)[1].strip()
@@ -158,10 +161,28 @@ def parse_response(text: str) -> dict[str, Any]:
         raise JdoError(f"jdo-cli 返回非 JSON 内容：{cleaned[:300]}") from exc
     if payload.get("success") is False:
         errors = payload.get("errorList") or []
+        if isinstance(errors,dict):
+            errors=[errors]
+        complete_codes=isinstance(errors,list) and all(isinstance(item,dict) for item in errors)
+        errors=[item for item in errors if isinstance(item,dict)] if isinstance(errors,list) else []
         message = "; ".join(
             f"{item.get('code', 'UNKNOWN')} {item.get('message', '')}" for item in errors
         )
-        raise JdoError(message or "jdo-cli 调用失败")
+        error=JdoError(message or "jdo-cli 调用失败")
+        codes=[str(item.get('code','')) for item in errors]
+        error.platform_codes=sorted(set(codes)) if complete_codes and all(re.fullmatch(r'[0-9]{6,14}',c) for c in codes) else []
+        error.platform_call=(method,url)
+        result_data=payload.get('data')
+        error.no_issued_ids=(result_data is None or result_data=={})
+        error.no_issued_ids=error.no_issued_ids and not any(payload.get(k) for k in ('applyId','productId','jobId','taskId'))
+        # A negative envelope with row results or an unfamiliar response shape cannot prove an all-or-none refusal.
+        refusal_envelope={'success','errorList','data','requestId','traceId','code','message','msg','timestamp'}
+        refusal_fields={'code','message','msg','description'}
+        error.no_partial_results=bool(error.no_issued_ids and error.platform_codes and set(payload)<=refusal_envelope
+                                      and all(set(row)<=refusal_fields for row in errors))
+        request_id=str(payload.get('requestId') or '')
+        error.request_id=request_id if re.fullmatch('[a-fA-F0-9-]{6,64}',request_id) else None
+        raise error
     return payload
 
 
@@ -223,7 +244,7 @@ def _invoke_with_official_cli(
     environment["JDO_ENV"] = "prod"
     completed = subprocess.run([str(executable), *arguments], cwd=ROOT, env=environment, capture_output=True, check=False)
     output = "\n".join(part for part in (decode_process_output(completed.stdout), decode_process_output(completed.stderr)) if part)
-    return parse_response(output)
+    return parse_response(output, method=method, url=url)
 
 
 def run_jdo_large(
@@ -276,7 +297,7 @@ def run_jdo_large(
     finally:
         request_path.unlink(missing_ok=True)
     output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
-    return parse_response(output)
+    return parse_response(output, method=method, url=url)
 
 
 def get(skill: str, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -308,14 +329,15 @@ def verify_configured_store_identity(store_config_path: Path, profile: str) -> d
     shop = data.get("shopBaseInfo") or {}
     vender_id = int(data.get("venderId") or 0)
     shop_name = str(shop.get("shopName") or "").strip()
-    if vender_id != expected_vender_id or shop_name != expected_shop_name:
+    if (vender_id != expected_vender_id or shop_name != expected_shop_name
+            or (expected.get("shopId") and str(expected["shopId"]) != str(shop.get("shopId") or ""))):
         raise JdoError(
             f"Profile {active_profile} 对应店铺与配置不一致："
             f"venderId={vender_id}, shopName={shop_name}"
         )
     if int(shop.get("type", -1)) != 0 or int(shop.get("status") or 0) != 1:
         raise JdoError(f"Profile {active_profile} 对应店铺不是正常 POP 状态")
-    mark_jdo_store_verified(active_profile, vender_id, shop_name)
+    mark_jdo_store_verified(active_profile, vender_id, shop_name, shop.get("shopId"))
     return {
         "profile": active_profile,
         "venderId": vender_id,
@@ -1301,6 +1323,28 @@ def command_validate_jd(args: argparse.Namespace) -> int:
         "output": str(args.output),
     }, ensure_ascii=False, indent=2))
     return 0 if not strong else 2
+
+
+def submit_product_once(body: Path, output: Path) -> dict[str, Any]:
+    """Reuse matrix publishing's persisted unknown-write guard for direct entrances."""
+    import matrix_listing as matrix
+    state_path = Path(body).with_name(Path(body).stem + ".submit-state.json")
+    matrix.publish_guard(load_json(state_path) if state_path.exists() else {})
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload_sha=hashlib.sha256(Path(body).read_bytes()).hexdigest()
+    matrix.save_json_atomic(state_path, {"stage":"SUBMITTING","payloadSha256":payload_sha})
+    response = run_jdo_large(
+        url="/rest/sp-product/v0/product-applies", method="POST", body_path=body,
+        skill_id="jdo-product-publish", yes=True,
+    )
+    matrix.save_json_atomic(output, response)
+    data = response.get("data") or {}
+    matrix.save_json_atomic(state_path, {
+        "stage": "PUBLISHED" if data.get("productId") else "SUBMITTING",
+        "productId": data.get("productId"), "applyId": data.get("applyId"), "payloadSha256":payload_sha,
+    })
+    return response
 
 
 def command_publish(args: argparse.Namespace) -> int:

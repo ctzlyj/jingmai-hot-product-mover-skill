@@ -45,7 +45,7 @@ class HandoffCheckTests(unittest.TestCase):
     def test_calls_the_installed_skill_with_the_package_dir_and_hidden_window(self):
         with patch.object(vh.subprocess, 'run', return_value=completed(0)) as run, patch.object(vh, 'find_video_skill', return_value=Path('S')):
             vh.check_handoff(self.file)
-        cmd = run.call_args[0][0]; self.assertIn('verify-handoff', cmd); self.assertTrue(str(cmd[1]).replace('\\', '/').endswith('scripts/pop_video.py')); self.assertEqual(str(self.root), cmd[-1])
+        cmd = run.call_args[0][0]; self.assertIn('verify-handoff', cmd); self.assertTrue(str(cmd[1]).replace('\\', '/').endswith('scripts/pop_video.py')); self.assertEqual(str(self.root.resolve()), cmd[-1])
     def test_missing_video_skill_blocks_with_install_hint(self):
         with patch.object(vh, 'find_video_skill', return_value=None):
             with self.assertRaisesRegex(vh.HandoffError, '11190'): vh.check_handoff(self.file)

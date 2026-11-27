@@ -49,10 +49,10 @@ class DiscoverCommandTests(unittest.TestCase):
         self.assertEqual(55, data['templates']['2']['source']['productId']); self.assertEqual(1, data['templates']['2']['source']['categoryId'])
         self.assertNotIn('token', json.dumps(data).lower())
         self.assertEqual(55, read(self.root)['saleAttributeTemplates']['2']['productId'])
-    def test_unresolvable_template_stops_with_one_question(self):
+    def test_unresolvable_template_identifies_the_missing_controls(self):
         with patch.object(pl, 'verify_store'), patch.object(pl, '_fetch_official_sale_templates', side_effect=RuntimeError('denied')), patch.object(pl, '_fetch_same_shop_samples', return_value=[]):
             r = pl.discover_sale_templates(self.root, structured_reference())
-        self.assertEqual(1, len(r['missing'])); self.assertIn('请提供', r['ask'])
+        self.assertEqual(1, len(r['missing'])); self.assertIn('核对框名、单位和选项', r['ask'])
     def test_apply_templates_fills_skus_from_user_values_only(self):
         tpl = {'templates': {'2': {'attrId': '2', 'inputs': [{'id': 7, 'text': '', 'locked': False, 'options': []}], 'source': {'kind': 'x'}}}, 'missing': []}
         atomic_json(self.root / 'sale-attr-templates.json', tpl)

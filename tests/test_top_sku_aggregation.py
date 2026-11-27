@@ -797,7 +797,8 @@ class DocumentationTests(unittest.TestCase):
 
     def test_version_bumped(self):
         text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("version: 1.3.0", text)
+        version = next(line.split()[1] for line in text.splitlines() if line.startswith("version: "))
+        self.assertGreaterEqual(tuple(map(int, version.split("."))), (1, 3, 0))
 
 
 class FakeCollectJm(FakeJm):

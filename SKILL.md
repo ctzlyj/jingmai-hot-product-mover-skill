@@ -1,12 +1,14 @@
 ---
 name: jd-jingmai-hot-product-mover
-version: 1.3.0
+version: 1.3.1
 description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复、新增来源/类目适配，以及本店在售链接的同款矩阵换主图上架、类目TOP销量SKU聚合草稿；不用于绕过登录、平台权限、版权授权或营销活动报名。
 ---
 
 # 爆品自动搬运上架京麦
 
 把“采集、审核、发品、视频绑定、发布后审计”视为一个可恢复事务，而不是一次盲目提交。
+
+两家已授权 POP 店搬家后核对内容时，从 `python scripts/jd_product_pipeline.py shop-copy` 选工具。`history-census` 将原发布回执与商品回读分别关联到目标链接。`copy-materials` 默认逐 SKU 和槽位只读盘点，接受多个明确交办的 `--target-product-id`，分别返回原图位、审核状态、缺口和回执。已授权补绑时加 `--confirm FILL_MISSING_COPY_MATERIALS`，请求中断后用相同范围重跑并核对原记录。`copy-short-titles` 逐 SKU 比对，为目标店有明确空值的规格生成官方导入表，携带文件哈希交给信息分模块。用法与回归见 [跨店素材核对](references/pop-copy.md)。
 
 每次真实任务同时用于改进本个人版：记录各阶段耗时、重复调用、失败与恢复证据，优先减少重复取数、复用同店铺素材和采用已验证的批量流程。只沉淀已复现、根因确认且修复验证通过的改进；优化不能代替本批业务完成，也不能以省略商家原码、错店保护、精确定价、幂等或独立回查换速度。工具选择和授权内恢复由助手自主完成。
 
@@ -49,7 +51,7 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 
 发品整版 schema 这类大请求受 Windows 命令行长度限制，只有大请求才依赖 Python 3.12，且不再绑定某个京麦 CLI 版本（0.3.4/0.3.7 都可用）；缺少时自检只提示“发品、整版编辑、属性补全、素材绑定暂时不能做，查询、审计、授权、本地生成照常”，见 `references/large-requests-and-cli-versions.md`。
 
-结构化销售属性（如类目 35057 的“尺寸”）必须带 `templateSkuProps`；**平台预校验通过不代表其别名正确，真实提交才会报 1010300506**，所以先 `discover-sale-templates`（官方接口→同店同类目在架商品→停下问用户），缺失时发布前即阻止。发布被平台明确拒绝记 `REJECTED`，`REJECTED`/`UNKNOWN` 须 `confirm-not-created` 只读回查无商品后才可再提交，详见 `references/structured-sale-attributes.md`。在架状态值 `103`（和 `1`）才算在架。
+结构化销售属性（如类目 35057 的“尺寸”）必须带 `templateSkuProps`；**平台预校验通过不代表其别名正确，真实提交才会报 1010300506**，所以先 `discover-sale-templates`（官方接口→同店同类目在架商品→核对目标店编辑器中的控件与选项），缺失时发布前即阻止。发布被平台明确拒绝记 `REJECTED`，`REJECTED`/`UNKNOWN` 须 `confirm-not-created` 只读回查无商品后才可再提交，详见 `references/structured-sale-attributes.md`。在架状态值 `103`（和 `1`）才算在架。
 
 完整接口与状态机见 `references/photo-new-listing.md`，详情页方案/门槛/补救见 `references/detail-pages.md`，商品确认规则与数据契约见 `references/listing-package.schema.json`。
 
@@ -193,3 +195,5 @@ python scripts/merchant_template_import.py `
 只有以下证据全部满足才报告成功：商品详情可查、SKU 数量和组合一致、价格公式一致、商家编码唯一、库存专用接口一致、多套主图逐款式完整、详情图与保留页的数量/顺序一致；若有视频，还必须全部 SKU 的视频关系均为审核通过状态。
 
 状态机、幂等恢复与停止条件见 `references/state-machine.md` 和 `references/troubleshooting-and-stop-conditions.md`。完整业务交接见 `references/handoff-manual.md`。
+
+实拍上新先看一张时，宿主可给 photo_listing.py 的 make-sample 传原商品包、图位编号和逐图设计文件，仅生成该样张。验收走 accept-sample，后续 sample-context 按原包、图位、规格及文件哈希找回。make-plan 与 generate 可复用已接受的像素，模型和费用仍由当前宿主处理。
