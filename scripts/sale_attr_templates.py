@@ -6,7 +6,7 @@ submission does (1010300506). So the template must be known BEFORE publishing:
 1. official GET /categories/{categoryId}/sale-attr-templates
 2. denied / empty -> read-only look at on-sale products of the SAME shop and SAME last category and
    copy only the input-box structure (ids, units) that every sample agrees on; sample values are never copied
-3. still unknown -> stop before publishing and ask the user once
+3. still unknown -> identify the missing target control; the host can inspect the current editor
 
 Provenance (source product id, category, attribute, input ids, evidence) is recorded; no credentials.
 """
@@ -33,6 +33,7 @@ def _leaves(node):
 
 
 def from_official(rows, attr_id):
+    matched=None
     for row in rows or []:
         if str(row.get('templateType')) != '2':
             continue
@@ -43,18 +44,33 @@ def from_official(rows, attr_id):
             inputs = []
             for item in rules.get('items') or []:
                 ids = ((item.get('properties') or {}).get('id') or {}).get('enum') or []
-                if not ids:
-                    continue
+                if len(ids)!=1:
+                    return None  # One ambiguous box invalidates this template as a source of binding IDs.
                 enums = ((item.get('properties') or {}).get('value') or {}).get('enum') or []
                 options = []
                 for e in enums:
-                    options += _leaves(e.get('preprocessingSaleAttrValTemplateValueList'))
+                    if isinstance(e,dict):
+                        options += _leaves(e.get('preprocessingSaleAttrValTemplateValueList'))
                 features = item.get('features') or {}
-                inputs.append({'id': ids[0], 'text': features.get('text') or '', 'locked': str(features.get('isLocked')) == '1', 'options': options})
+                box={'id': ids[0], 'text': features.get('text') or '', 'locked': str(features.get('isLocked')).lower() in ('1','true'), 'options': options}
+                unit_rule=(item.get('properties') or {}).get('unit') or {}
+                if isinstance(unit_rule,dict):
+                    units=unit_rule.get('enum') or []
+                    if len(units)==1:box['unit']=str(units[0])
+                    elif units:box['allowedUnits']=[str(u) for u in units]
+                    elif unit_rule.get('const') is not None:box['unit']=str(unit_rule['const'])
+                if 'unit' in (item.get('required') or []):box['unitRequired']=True
+                inputs.append(box)
             if inputs:
-                return {'attrId': str(attr_id), 'title': rules.get('title') or '', 'inputs': inputs,
-                        'source': {'kind': 'official-interface', 'attrName': rules.get('title') or '', 'evidence': 'sale-attr-templates'}}
-    return None
+                minimum=rules.get('minItems')
+                if type(minimum) is int and 0<=minimum<=len(inputs):
+                    for index,box in enumerate(inputs):
+                        if index>=minimum:box['optional']=True
+                template={'attrId':str(attr_id),'title':rules.get('title') or '','inputs':inputs,
+                          'source':{'kind':'official-interface','attrName':rules.get('title') or '','evidence':'sale-attr-templates'}}
+                if matched is not None and matched!=template:return None
+                matched=template
+    return matched
 
 
 def _shape(sale_attr):
@@ -93,7 +109,8 @@ def from_same_shop_products(products, category_id, attr_id):
 
 
 def structured_components(components):
-    return [c for c in components if c.get('componentCode', '').startswith('sale-prop-') and (c.get('extra') or {}).get('isStructure')]
+    return [c for c in components if c.get('componentCode','').startswith('sale-prop-')
+            and str((c.get('extra') or {}).get('isStructure','')).lower() in ('1','true')]
 
 
 def resolve(components, category_id, *, fetch_official, fetch_samples):
@@ -122,7 +139,7 @@ def resolve(components, category_id, *, fetch_official, fetch_samples):
     ask = ''
     if missing:
         names = '、'.join(m['attrName'] or m['attrId'] for m in missing)
-        ask = f'类目 {category_id} 的销售属性「{names}」是结构化属性，官方模板无权限，且同店同类目没有可参照的在售商品。请提供该属性在京麦后台的填写框（每个框的名称、可选值和单位），或先在后台手工建一个同类目商品供参照。'
+        ask = f'类目 {category_id} 的「{names}」尚未取得可用的填写框。宿主可读取目标商品当前编辑页、同店同类目已通过的申请或已授权的模板来源，核对框名、单位和选项。其他已知规格可先整理成草稿。'
     return {'templates': templates, 'missing': missing, 'ask': ask}
 
 

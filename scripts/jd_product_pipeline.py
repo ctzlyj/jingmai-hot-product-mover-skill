@@ -252,7 +252,7 @@ def product_apply_rejection(product_id: int) -> dict[str, Any] | None:
     return rejection
 
 
-def list_products(category_id: int | None = None, item_num: str | None = None) -> list[dict[str, Any]]:
+def list_products(category_id: int | None = None, item_num: str | None = None, *, require_success: bool = False) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     expected_total: int | None = None
@@ -270,6 +270,8 @@ def list_products(category_id: int | None = None, item_num: str | None = None) -
         if item_num:
             params["itemNum"] = item_num
         response = jingmai.get("jdo-product-status", "/rest/sp-product/v0/products", params)
+        if require_success and (response.get("success") is not True or response.get("errorList")):
+            raise PipelineError("商品列表缺少成功业务回执")
         batch = response.get("data") or []
         pagination = response.get("paginationData") or {}
         if "totalItems" not in pagination:
@@ -940,6 +942,9 @@ def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
+    if sys.argv[1:2] == ["shop-copy"]:
+        from pop_copy.entry import main as shop_copy
+        return shop_copy(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run")

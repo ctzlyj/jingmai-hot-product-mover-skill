@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1 候选
+
+搬家后的素材与短标题按两个已核验的店铺、商品、SKU 和图位分别交付。同一个源对应多个目标时可以逐链接核实。源为空的补绑任务返回未交付，已提交但结果不明的槽位先核对原回执。新增同一份源码安装回归覆盖采销业务入口和商家包装器。
+
 ## 1.3.0 (2026-11-27)
 接入「TOP销量SKU聚合草稿」模式（只保存草稿，不上架）。
 - 新增 `scripts/top_sku_aggregation.py` 与 `references/top-sku-aggregation.md`；复用现有 jdo 桥与 win_no_window，不新增业务能力、不改总入口 registry。
