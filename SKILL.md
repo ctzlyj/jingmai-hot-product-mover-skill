@@ -1,7 +1,7 @@
 ---
 name: jd-jingmai-hot-product-mover
-version: 1.2.8
-description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复、新增来源/类目适配，以及本店在售链接的同款矩阵换主图上架；不用于绕过登录、平台权限、版权授权或营销活动报名。
+version: 1.3.0
+description: 将京东、淘宝或天猫商品链接及拼多多本地导出整理为可审核素材和标准 JSON/Excel，并通过京麦 jdo-cli 幂等发布、回查图片价格库存及自动上传主图视频。适用于 POP 商家跨来源搬运、修图后按原链接或商品表格重发、批量上架、失败恢复、新增来源/类目适配，以及本店在售链接的同款矩阵换主图上架、类目TOP销量SKU聚合草稿；不用于绕过登录、平台权限、版权授权或营销活动报名。
 ---
 
 # 爆品自动搬运上架京麦
@@ -18,6 +18,20 @@ description: 将京东、淘宝或天猫商品链接及拼多多本地导出整�
 - 禁止网页自动化；禁止客户端 CDP、Playwright、浏览器插件或任何远程调试方式替代人工客户端操作。
 - REST 接口即使返回 `success`，也不能证明 SKU 详情已生效；必须回读 `productInfo.productDetailDesc` 与 `skuList[].productDetailDesc.desc`。
 - 交付模板必须记录 `detailMode=SPU`、`skuDetailManualPending=true`、待设置 SKU 列表和客户端人工步骤。
+
+## TOP销量SKU聚合草稿（只保存草稿）
+
+标准触发词：**聚合上新、整合链接、类目TOP SKU聚合、组合链接草稿**。
+
+按类目近 30 天订单销量（`orderQty30d` 汇总）选 TOP N SPU，各取最高销量 SKU，聚合成一条新链接草稿：单一「颜色」维度、每 SKU 多图、价格严格等于源 SKU、每 SKU 独立详情。执行入口 `scripts/top_sku_aggregation.py`，完整规则见 `references/top-sku-aggregation.md`。
+
+- **只保存草稿**：`saveActionType=0`，回读 `productStatus=105`；绝不点「提交并上架」。本模式不提供上架路径。
+- **TOP N 口径**：SPU 排名按该 SPU 全部 SKU 的 `orderQty30d` 汇总，不按商品列表 `salesVolume`；`salesVolume` 仅作参考。
+- **业务一致性**：聚合前断言所有源 SPU 的 `brandId`、`categoryId`、关键类目属性一致；不一致停止并让用户确认。尺寸/重量/运费模板/承诺取 TOP1，必须在确认清单中明示。
+- **提交幂等**：`submit_state.json` 记录 `PREPARED/SUBMITTING/CREATED/UNKNOWN`；已有 `applyId` 停止；超时/未知先按 applyId 或标题+时间回查，确认未创建才允许 `--retry`；禁止换工具/换目录重投。
+- **SKU 维度详情**：默认生成逐 SKU 详情 HTML + 映射表 + 京麦客户端人工步骤，交付 `detailMode=SPU`、`skuDetailManualPending=true`、`skuDetailPendingKeys`；人工完成后回读 `skuList[].productDetailDesc.desc`。不包含网页自动化/Playwright/CDP，不探测 `descModel`。
+- **Profile 锁**：检测 `SingletonLock`/`SingletonCookie`/`SingletonSocket`/`lockfile` 和占用进程；检测到占用时停止并让用户关闭对应窗口，不按 PID 强杀、不删除别人的锁。
+- **确认点**：TOP N、规格命名、标题、库存、是否只保存草稿；确认前不得提交。`build` 输出 `确认清单.md` 与 `checklistHash`，`submit` 必须用该哈希前 8 位确认。
 
 ## 实拍图上新（Codex 开发，JoyCode 使用）
 
@@ -102,6 +116,8 @@ python -X utf8 scripts/bootstrap.py --json
 - 淘宝/天猫草稿的专利图、淘金币、活动价格说明和平台专属页直接删，近重复详情可经审核后删减；除此之外不做保真式排版/双图比对验收。
 - 视觉检测仅保留**生图前详情页衔接预检**（`scripts/seam_preflight.py`，gemini-3.8-flash-official 源图预检，gemini 无法识图时改用 agent 自带视觉模型，详见 `references/jd-hot-replica-mode.md`「详情页衔接」节）；生图/修图后不做品牌残留扫描、VLM 审图、质量门禁或逐张视觉验收，生成结果直接替换原图上传。爆款复刻生图统一使用 `scripts/hot_replica_mode.py` 生成的动态提示词 + `scripts/generate_with_continuity.py` 注入衔接计划（gpt-image-2.5 新链路）；提示词原文为用户定稿，禁止擅自改写。返工触发条件：平台驳回上架（按驳回原因重制）、用户明确指出详情页断层（重制异类图单张）。`image_quality_gate.py` 仅保留文件技术校验辅助（编码/尺寸/路径绑定）。
 - 淘宝真实 SKU 超过当前类目 `skuBindThresholdNum` 时，按完整款式组自动拆成最少且尽量均衡的多个商品；一次发布授权覆盖该次拆分，不逐件打断确认，全部结束后统一汇报各商品 ID、款式和 SKU 数。
+
+- 用户说「聚合上新 / 整合链接 / 类目TOP SKU聚合 / 组合链接草稿」时，读 `references/top-sku-aggregation.md`，用 `scripts/top_sku_aggregation.py`：按近30天订单销量（`orderQty30d` 汇总）选 TOP N SPU，各取最高销量 SKU，聚合成单一「颜色」维度草稿；价格严格等于源 SKU；只保存草稿（`saveActionType=0`，回读 `productStatus=105`），绝不点「提交并上架」；SKU 维度详情默认生成逐 SKU HTML+映射+客户端人工步骤，`skuDetailManualPending=true`。
 
 ## 旧普通搬运前判重门槛（不适用京东爆款复刻表格逐链接模式）
 

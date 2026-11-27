@@ -25,6 +25,26 @@
 - 发布后核对 SKU、价格、库存、商家编码、销售属性、主图和详情图。
 - 以源 SPU 查重；重复执行从状态文件恢复，不重复创建商品或上传已存在视频。
 
+## TOP销量SKU聚合草稿（只保存草稿）
+
+按类目近 30 天订单销量（`orderQty30d` 汇总）选 TOP N SPU，各取最高销量 SKU，聚合成一条新链接草稿：单一「颜色」维度、每 SKU 多图、价格严格等于源 SKU、每 SKU 独立详情。
+
+```powershell
+# 1. 只读采集 TOP SKU
+.\.venv\Scripts\python.exe scripts\top_sku_aggregation.py collect --config task_config.json
+
+# 2. 本地构建 payload、确认清单、逐 SKU 详情
+.\.venv\Scripts\python.exe scripts\top_sku_aggregation.py build --config task_config.json
+
+# 3. 用户确认后只建草稿（用确认清单里的 checklistHash 前 8 位）
+.\.venv\Scripts\python.exe scripts\top_sku_aggregation.py submit --config task_config.json --confirm <hash8>
+
+# 4. 只读回读验证
+.\.venv\Scripts\python.exe scripts\top_sku_aggregation.py verify --config task_config.json
+```
+
+只保存草稿（`saveActionType=0`，回读 `productStatus=105`），不提供上架路径。SKU 维度详情默认生成逐 SKU HTML + 映射表 + 京麦客户端人工步骤，`skuDetailManualPending=true`；人工完成后回读 `skuList[].productDetailDesc.desc`。完整规则见 `references/top-sku-aggregation.md`。
+
 ## 安装
 
 ```powershell

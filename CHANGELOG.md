@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 (2026-11-27)
+接入「TOP销量SKU聚合草稿」模式（只保存草稿，不上架）。
+- 新增 `scripts/top_sku_aggregation.py` 与 `references/top-sku-aggregation.md`；复用现有 jdo 桥与 win_no_window，不新增业务能力、不改总入口 registry。
+- TOP N 改为按 SPU 的 `orderQty30d` 汇总排名，`salesVolume` 仅作参考。
+- 提交增加 `submit_state.json` 状态机（PREPARED/SUBMITTING/CREATED/UNKNOWN），已有 applyId 停止，未知结果先回查，确认未创建才允许 `--retry`。
+- SKU 维度详情默认生成逐 SKU HTML+映射+京麦客户端人工步骤，交付 `detailMode=SPU`、`skuDetailManualPending=true`；不包含网页自动化。
+- 聚合前断言 brandId/categoryId/关键类目属性一致；尺寸/重量/运费模板/承诺取 TOP1 并在确认清单明示。
+- 浏览器 Profile 锁改为只读检测并停止，不按 PID 强杀、不删除别人的锁。
+- 新增假数据回归：配置校验、payload、价格断言、单颜色维度、图片≥5、逐 SKU 详情映射、提交状态机、无网络。
+
+
 ## 1.2.8 (2026-11-26)
 - 修正 SkillHub 打包：清除运行测试产生的 __pycache__/.pytest_cache，确保发布包不含缓存文件。
 
